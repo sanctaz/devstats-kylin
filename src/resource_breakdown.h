@@ -22,4 +22,7 @@ public:
     explicit MetricItemDelegate(QObject *parent = nullptr) : QStyledItemDelegate(parent) {}
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override;
+    // Tooltips carry process names and paths; they are shown literally.
+    bool helpEvent(QHelpEvent *event, QAbstractItemView *view, const QStyleOptionViewItem &option,
+                   const QModelIndex &index) override;
 };

@@ -140,7 +140,7 @@ private:
     void addProject();
     void showError(const QString &message);
     void storePreference(const QString &key, const QVariant &value);
-    void saveReport(const QJsonObject &report, const QString &title, const QString &prefix);
+    void saveReport(const QString &html, const QString &title, const QString &prefix);
     void showMemoryRelief();
     QSettings settings_;
     QThread thread_;

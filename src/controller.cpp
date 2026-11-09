@@ -34,6 +34,7 @@
 #include "memory_relief_dialog.h"
 #include "relief_observation.h"
 #include "process_rules.h"
+#include "report_html.h"
 #include "process_rules_panel.h"
 #include "ui_theme.h"
 #include <QUuid>
@@ -536,7 +537,7 @@ AppController::AppController(QObject *parent)
     });
     connect(worker_, &MonitorWorker::incidentExportReady, this, [this](const QJsonObject &incident) {
         if (!window_) return;
-        saveReport(incident, QStringLiteral("导出卡顿事件（含当时应用名、PID 和资源指标）"), "DevStats-incident-");
+        saveReport(DevStatsReport::incidentHtml(incident), QStringLiteral("导出卡顿记录（HTML，含当时的应用名、PID 和资源指标）"), "DevStats-incident-");
     });
     connect(worker_, &MonitorWorker::reliefBusyChanged, this, [this](bool busy) {
         reliefBusy_=busy;
@@ -655,8 +656,10 @@ void AppController::notifyAutomation() {
     for (auto *tray : trays_) {
         if (!tray->isVisible() || !QSystemTrayIcon::supportsMessages()) continue;
         lastNotificationAt_ = now;
-        tray->showMessage(QStringLiteral("自动查杀：%1").arg(entry.value("name").toString()),
-                          entry.value("condition").toString() + QStringLiteral("\n") + entry.value("message").toString(),
+        // Notification servers may render the body as markup; a program name must stay text.
+        const auto plain = [](QString text) { return text.replace('&', QChar(0xFF06)).replace('<', QChar(0x2039)).replace('>', QChar(0x203A)); };
+        tray->showMessage(QStringLiteral("自动查杀：%1").arg(plain(entry.value("name").toString())),
+                          plain(entry.value("condition").toString() + QStringLiteral("\n") + entry.value("message").toString()),
                           QSystemTrayIcon::Information, 6000);
         break;
     }
@@ -674,8 +677,12 @@ MonitorWindow *AppController::window() const { return window_.data(); }
 bool AppController::eventFilter(QObject *object, QEvent *event) {
     // A close/hide from an already minimized window does not change its
     // presentation-visible flag. Still bound this genuinely hidden window.
-    if (!stopped_ && object == window_.data() &&
-        (event->type() == QEvent::Close || event->type() == QEvent::Hide)) windowReleaseTimer_->start();
+    // While the window is being destroyed it is no longer a MonitorWindow; reading
+    // window_ then would downcast a half-destroyed object. qobject_cast checks first.
+    if (!stopped_ && (event->type() == QEvent::Close || event->type() == QEvent::Hide)) {
+        auto *window = qobject_cast<MonitorWindow *>(object);
+        if (window && window == window_) windowReleaseTimer_->start();
+    }
     return QObject::eventFilter(object, event);
 }
 
@@ -739,7 +746,7 @@ void AppController::ensureWindow() {
         QMetaObject::invokeMethod(worker_, "setIncidentRecording", Qt::QueuedConnection, Q_ARG(bool, enabled));
     });
     connect(window_, &MonitorWindow::diagnosticExportRequested, this, [this] {
-        saveReport(window_->diagnosticReport(), QStringLiteral("导出诊断报告（含应用名、PID 和资源指标，不含命令行与项目路径）"), "DevStats-diagnostics-");
+        saveReport(DevStatsReport::diagnosisHtml(window_->diagnosticReport()), QStringLiteral("导出诊断报告（HTML，含应用名、PID 和资源指标，不含命令行与项目路径）"), "DevStats-diagnostics-");
     });
     connect(window_, &MonitorWindow::processActionRequested, this, [this](const QJsonObject &identity, const QString &action) {
         if (action != "terminate" && action != "kill") return;
@@ -814,18 +821,16 @@ void AppController::showMemoryRelief() {
     QMetaObject::invokeMethod(worker_,"refreshDiagnostics",Qt::QueuedConnection);
 }
 
-void AppController::saveReport(const QJsonObject &report, const QString &title, const QString &prefix) {
+// Reports are self-contained HTML pages that open in any browser, private to the user.
+void AppController::saveReport(const QString &html, const QString &title, const QString &prefix) {
     if (!window_) return;
-    const QString path = QFileDialog::getSaveFileName(window_, title,
-        QDir::homePath() + "/" + prefix + QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss") + ".json", QStringLiteral("JSON 报告 (*.json)"));
+    QString path = QFileDialog::getSaveFileName(window_, title,
+        QDir::homePath() + "/" + prefix + QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss") + ".html", QStringLiteral("HTML 报告 (*.html)"));
     if (path.isEmpty()) return;
-    QSaveFile file(path); file.setDirectWriteFallback(false);
-    const auto data = QJsonDocument(report).toJson(QJsonDocument::Indented);
-    const bool opened = file.open(QIODevice::WriteOnly);
-    const bool secure = opened && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-    if (!secure || file.write(data) != data.size() || !file.commit()) {
-        file.cancelWriting(); window_->setDiagnosticFeedback(QStringLiteral("报告未保存：%1").arg(file.errorString()));
-    } else window_->setDiagnosticFeedback(QStringLiteral("报告已保存至 %1").arg(path));
+    path = DevStatsReport::htmlPath(path);
+    const QString error = DevStatsReport::writePrivate(path, html.toUtf8());
+    window_->setDiagnosticFeedback(error.isEmpty() ? QStringLiteral("报告已保存至 %1，可以用浏览器打开。").arg(path)
+                                                   : QStringLiteral("报告未保存：%1").arg(error));
 }
 
 void AppController::showModule(const QString &module) {
@@ -866,7 +871,10 @@ void AppController::storePreference(const QString &key, const QVariant &value) {
 void AppController::showError(const QString &message) {
     ensureWindow();
     window_->show();
-    QMessageBox::warning(window_, "DevStats", message);
+    // Messages can quote file names and system errors; they are shown as text.
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("DevStats"), message, QMessageBox::Ok, window_);
+    box.setTextFormat(Qt::PlainText);
+    box.exec();
 }
 
 void AppController::updateTray() {

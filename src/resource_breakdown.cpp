@@ -1,6 +1,8 @@
 #include "resource_breakdown.h"
 #include "charts.h"
 #include "ui_theme.h"
+#include "ui_components.h"
+#include <QHelpEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QStyle>
@@ -108,4 +110,9 @@ void MetricItemDelegate::paint(QPainter *p, const QStyleOptionViewItem &option, 
     QColor fill = c.accent; fill.setAlphaF(.7); p->setBrush(fill);
     p->drawRoundedRect(QRectF(track.left(), track.top(), track.width() * std::clamp(value / 100., 0., 1.), track.height()), 1, 1);
     p->restore();
+}
+
+bool MetricItemDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view, const QStyleOptionViewItem &option, const QModelIndex &index) {
+    if (event && view && event->type() == QEvent::ToolTip) return DevStatsUI::literalToolTip(event, view, index);
+    return QStyledItemDelegate::helpEvent(event, view, option, index);
 }

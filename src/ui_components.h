@@ -4,7 +4,10 @@
 #include <QJsonObject>
 #include <QVector>
 
+class QAbstractItemView;
 class QHBoxLayout;
+class QHelpEvent;
+class QModelIndex;
 class QLabel;
 class QTreeWidget;
 class QVBoxLayout;
@@ -27,6 +30,11 @@ QTreeWidget *table(const QString &name, const QStringList &headers);
 void fitRows(QTreeWidget *tree, int minimumRows, int maximumRows);
 // A collapsed section: button text toggles body visibility.
 QWidget *disclosure(QLayout *parent, const QString &title, const QString &name, QWidget *body);
+// Names and paths come from other programs. Shown in a tooltip they must stay text:
+// anything that looks like markup is escaped instead of being rendered.
+QString literal(const QString &text);
+// For item delegates: shows the item's tooltip literally. Returns whether one was shown.
+bool literalToolTip(QHelpEvent *event, QAbstractItemView *view, const QModelIndex &index);
 }
 
 // An on/off control that looks the same under every Linux widget style.

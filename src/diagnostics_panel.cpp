@@ -844,7 +844,6 @@ QJsonObject DiagnosticsPanel::report() const {
         findings.append(finding);
     }
     diagnosis["findings"] = findings;
-    diagnosis.remove("meters");
     auto run = d->snapshot.value("diagnosticRun").toObject();
     QJsonArray runSuspects;
     for (const auto &value : run.value("suspects").toArray()) {

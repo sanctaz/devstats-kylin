@@ -8,8 +8,8 @@
 ## 解压即用
 
 ```sh
-tar -xzf devstats-0.8.3-linux-arm64-user.tar.gz
-cd devstats-0.8.3-linux-arm64-user
+tar -xzf devstats-0.8.4-linux-arm64-user.tar.gz
+cd devstats-0.8.4-linux-arm64-user
 ./devstats --show
 ```
 
@@ -23,7 +23,7 @@ cd devstats-0.8.3-linux-arm64-user
 ./install-user.sh
 ```
 
-默认安装目录为 `~/.local/opt/devstats-0.8.3`；命令入口为
+默认安装目录为 `~/.local/opt/devstats-0.8.4`；命令入口为
 `~/.local/bin/devstats`；菜单入口和图标位于
 `${XDG_DATA_HOME:-~/.local/share}/applications` 和 `icons/hicolor/scalable/apps`。
 安装器拒绝 root，也不会替你开启登录启动。默认数据位于当前用户的 XDG 数据目录，
@@ -36,7 +36,7 @@ cd devstats-0.8.3-linux-arm64-user
 同版本内容不同或已修改时，使用新的空目录，不覆盖原文件。自定义位置示例：
 
 ```sh
-DEVSTATS_USER_INSTALL_DIR="$HOME/应用/DevStats 0.8.3" \
+DEVSTATS_USER_INSTALL_DIR="$HOME/应用/DevStats 0.8.4" \
 DEVSTATS_USER_BIN_DIR="$HOME/.local/bin" ./install-user.sh
 ```
 
@@ -141,7 +141,7 @@ https://doc.qt.io/qt-6/deployment-plugins.html 。
 
 ## 显式安装范围
 
-需要把程序和入口都放入一个指定目录时，可执行 `./install-user.sh --prefix /绝对路径/DevStats`；版本目录为 `opt/devstats-0.8.3`，入口为 `bin/devstats`。卸载用 `./uninstall-user.sh --prefix /绝对路径/DevStats`，只检查这个前缀下的已验证安装，不扫描默认 HOME 目录；设置、历史、任务和缓存仍保留。前缀必须是无符号链接的规范绝对路径，不能为空或根目录。
+需要把程序和入口都放入一个指定目录时，可执行 `./install-user.sh --prefix /绝对路径/DevStats`；版本目录为 `opt/devstats-0.8.4`，入口为 `bin/devstats`。卸载用 `./uninstall-user.sh --prefix /绝对路径/DevStats`，只检查这个前缀下的已验证安装，不扫描默认 HOME 目录；设置、历史、任务和缓存仍保留。前缀必须是无符号链接的规范绝对路径，不能为空或根目录。
 
 ## 卡顿诊断
 
@@ -149,8 +149,10 @@ https://doc.qt.io/qt-6/deployment-plugins.html 。
 
 - **实时**：顶部横幅给出结论和依据，下方是处理器、内存、磁盘繁忙、响应延迟、温度、等待磁盘的进程 6 项指标，以及相关进程。其他用户的进程和内核线程也会列出。
 - **一键诊断**：观察约 10 秒，区分持续和偶发的问题，再按平均 CPU、内存峰值或读写峰值排出相关进程。它不会关闭任何程序。
-- **卡顿记录**：出现连续压力或短暂冻结时自动保存当时的证据，保留 31 天，可搜索和导出；页面右上角可关闭自动记录。
+- **卡顿记录**：出现连续压力或短暂冻结时自动保存当时的证据，保留 31 天，可搜索，也可导出成 HTML 报告；页面右上角可关闭自动记录。
 - **压力历史**：调度延迟、磁盘繁忙、I/O 等待、换出速率和 PSI 停顿的长期曲线。
+
+“导出报告…”和“导出所选…”生成单个 HTML 文件，用浏览器直接打开或打印，不需要联网；原始数据附在页面末尾。报告包含应用名、PID 和资源指标，不含命令行和程序路径，文件仅自己可读写。
 
 诊断只读取 `/proc`、`/sys`，不需要 root。内核没有 PSI 时改用调度等待、直接回收和磁盘延迟判断。进程排名表示当时相关，不等于确认是原因。
 

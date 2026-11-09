@@ -8,6 +8,7 @@
 #include "../src/memory_relief_dialog.h"
 #include "../src/monitor_window.h"
 #include "../src/process_rules_panel.h"
+#include "../src/report_html.h"
 #include "../src/ui_components.h"
 #include "../src/ui_theme.h"
 
@@ -276,6 +277,11 @@ int main(int argc, char **argv) {
                 auto *body = window.findChild<QWidget *>("diagnosticsPage");
                 body->grab().save(output + '/' + name + "-full.png");
             }
+        }
+        if (!output.isEmpty() && QString::fromLatin1(variant.name) == "dark") {
+            // The exported pages, built from the same data the window shows.
+            check(DevStatsReport::writePrivate(output + "/diagnosis-report.html", DevStatsReport::diagnosisHtml(window.diagnosticReport()).toUtf8()).isEmpty(), "diagnosis report exported");
+            check(DevStatsReport::writePrivate(output + "/incident-report.html", DevStatsReport::incidentHtml(incidentDetail()).toUtf8()).isEmpty(), "incident report exported");
         }
         if (!output.isEmpty() && (variant.size == QSize(1100, 780))) {
             const QString prefix = output + '/' + QString::fromLatin1(variant.name);

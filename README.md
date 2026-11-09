@@ -57,6 +57,7 @@ DevStats 麒麟版做两件事：
 - **结论先行**：一句话结论，然后是六个指标、发现的问题（每条有依据和建议）、相关进程（右键可结束或加入查杀）。
 - **一键诊断**：观察约 10 秒，区分持续和偶发的问题，给出各进程的平均和峰值。
 - **卡顿记录**：出现连续压力、短暂冻结（≥1 秒）或桌面卡住（≥3 秒）时，自动保存当时的证据，保留 31 天，可以导出。
+- **导出报告**：诊断结果和卡顿记录都能导出成单个 HTML 文件，浏览器直接打开、打印，不需要联网；原始数据附在页面末尾。报告不含命令行和程序路径。
 
 排行里的程序是卡顿时最忙的程序，相关性很强，但不等于已经证明是原因。GPU 负载、应用内部的锁等待和网络延迟测不到。
 
@@ -77,8 +78,8 @@ DevStats 麒麟版做两件事：
 从 [Releases](../../releases) 下载 `devstats-<版本>-linux-arm64-user.tar.gz`，在麒麟电脑上运行：
 
 ```bash
-tar -xzf devstats-0.8.3-linux-arm64-user.tar.gz
-cd devstats-0.8.3-linux-arm64-user
+tar -xzf devstats-0.8.4-linux-arm64-user.tar.gz
+cd devstats-0.8.4-linux-arm64-user
 ./install-user.sh
 ```
 

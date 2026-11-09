@@ -1,6 +1,8 @@
 #include "memory_relief_dialog.h"
 #include "charts.h"
 #include "ui_theme.h"
+#include "ui_components.h"
+#include <QHelpEvent>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -32,6 +34,10 @@ constexpr int ReasonRole = Qt::UserRole + 2;
 class CheckDelegate final : public QStyledItemDelegate {
 public:
     explicit CheckDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
+    bool helpEvent(QHelpEvent *event, QAbstractItemView *view, const QStyleOptionViewItem &option, const QModelIndex &index) override {
+        if (event && view && event->type() == QEvent::ToolTip) return DevStatsUI::literalToolTip(event, view, index);
+        return QStyledItemDelegate::helpEvent(event, view, option, index);
+    }
     void paint(QPainter *painter, const QStyleOptionViewItem &source, const QModelIndex &index) const override {
         QStyledItemDelegate::paint(painter, source, index);
         QStyleOptionViewItem option(source); initStyleOption(&option, index);

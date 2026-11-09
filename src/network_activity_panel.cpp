@@ -1,5 +1,6 @@
 #include "network_activity_panel.h"
 #include "charts.h"
+#include "ui_components.h"
 #include <QComboBox>
 #include <QDateTime>
 #include <QHeaderView>
@@ -27,7 +28,8 @@ double measured(const QJsonValue &value) {
 QLabel *text(const QString &value, const QString &name, bool muted = false) {
     auto *label = new QLabel(value); label->setObjectName(name); label->setTextFormat(Qt::PlainText); label->setWordWrap(true);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    if (muted) label->setProperty("textRole", "muted"); return label;
+    if (muted) label->setProperty("textRole", "muted");
+    return label;
 }
 QString rate(const QJsonObject &row, const QString &key) {
     const double value = measured(row.value(key));
@@ -135,7 +137,7 @@ struct NetworkActivityPanel::Impl {
                 const QString hint = app.value("name").toString() + QStringLiteral("\n%1 个进程 · %2 个连接").arg(app.value("processCount").toInt()).arg(app.value("connectionCount").toInt())
                     + (app.value("partial").toBool() ? QStringLiteral("\n部分观测；已知值是可见连接的下界。") : QString());
                 for (int column = 0; column < 4; ++column) {
-                    const QString tip = hint + (column == 2 ? "\n↑ " + rate(app, "uploadBytesPerSecond") : column == 3 ? "\n↓ " + rate(app, "downloadBytesPerSecond") : QString());
+                    const QString tip = DevStatsUI::literal(hint + (column == 2 ? "\n↑ " + rate(app, "uploadBytesPerSecond") : column == 3 ? "\n↓ " + rate(app, "downloadBytesPerSecond") : QString()));
                     if (item->toolTip(column) != tip) item->setToolTip(column, tip);
                 }
                 QHash<QString, QTreeWidgetItem *> children;

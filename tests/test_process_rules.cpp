@@ -273,6 +273,40 @@ void thresholds(pid_t sentinel) {
     check(!paused.wantsFreshProcesses(), "paused rules ask for no extra sampling");
 }
 
+// A check that fails for a passing reason (the process was exiting, or an ancestor
+// exited while the lineage was walked) is asked again on the next scan instead of
+// protecting the process for its whole life. A lasting refusal is still kept and logged once.
+void passingFailures() {
+    const pid_t target = ownedSibling();
+    const auto targetId = nativeIdentity(target);
+    ProcessRules flaky;
+    int calls = 0;
+    flaky.setInspector([&calls](const QJsonObject &process) {
+        if (++calls == 1) return QJsonObject{{"ok", false}, {"code", "ancestryUnavailable"}, {"message", "lineage changed"}};
+        return ProcessActions().inspectIdentity(process);
+    });
+    check(flaky.configure(true, {rule(targetId.value("executablePath").toString())}).value("ok").toBool(), "unconditional rule for the flaky check");
+    flaky.observe(snapshot({targetId}, 1), 0);
+    check(entries(flaky).isEmpty() && alive(target), "a passing check failure is neither logged nor final");
+    flaky.observe(snapshot({targetId}, 2), 2000);
+    check(calls == 2 && entries(flaky).size() == 1 && entries(flaky).first().toObject().value("phase") == "requested", "the next scan checks again and acts");
+    check(exitsWithin(target, targetId), "and the process is ended");
+
+    const pid_t kept = ownedSibling();
+    const auto keptId = nativeIdentity(kept);
+    ProcessRules strict;
+    int asked = 0;
+    strict.setInspector([&asked](const QJsonObject &) {
+        ++asked;
+        return QJsonObject{{"ok", false}, {"code", "protectedProcess"}, {"message", "protected"}};
+    });
+    check(strict.configure(true, {rule(keptId.value("executablePath").toString())}).value("ok").toBool(), "unconditional rule for the protected process");
+    strict.observe(snapshot({keptId}, 1), 0);
+    strict.observe(snapshot({keptId}, 2), 2000);
+    check(asked == 1 && entries(strict).size() == 1 && entries(strict).first().toObject().value("phase") == "refused" && alive(kept),
+          "a lasting refusal is remembered and logged once");
+}
+
 int runTests() {
     check(::getuid() != 0 && ::geteuid() == ::getuid(), "ordinary native test user");
     QTemporaryDir temporary;
@@ -282,6 +316,7 @@ int runTests() {
     const auto targetIdentity = nativeIdentity(target), sentinelIdentity = nativeIdentity(sentinel);
     const QString executable = targetIdentity.value("executablePath").toString();
     validations(executable);
+    passingFailures();
     ProcessRules pausable;
     const QJsonArray pauseRules{rule(executable)};
     check(pausable.configure(true, pauseRules).value("ok").toBool(), "valid rules explicitly activate automation");

@@ -173,13 +173,22 @@ QString ProcessRules::conditionText(const Rule &rule) const {
     return rule.sustainSeconds ? limit + QStringLiteral("，持续 %1").arg(seconds(rule.sustainSeconds)) : limit;
 }
 
+namespace {
+// Ownership, protection, kernel support, and whether this exact identity still exists
+// do not change for one process identity, so those answers are kept. A failed read can:
+// /proc could not be read in that moment, or an ancestor exited while the lineage was
+// walked. Remembering that would protect the process for its whole life.
+bool lasting(const QJsonObject &result) {
+    static const QSet<QString> passing{"identityUnavailable", "ancestryUnavailable", "operationFailed"};
+    return result.value("ok").toBool() || !passing.contains(result.value("code").toString());
+}
+}
+
 QJsonObject ProcessRules::inspection(const QJsonObject &process, const QString &identity) {
     const auto found = inspections_.constFind(identity);
     if (found != inspections_.cend()) return found.value();
-    // Ownership and session protection do not change for one process identity.
-    // Re-reading them on every scan would only repeat the same answer.
-    const auto result = ProcessActions().inspectIdentity(process);
-    inspections_.insert(identity, result);
+    const auto result = inspector_ ? inspector_(process) : ProcessActions().inspectIdentity(process);
+    if (lasting(result)) inspections_.insert(identity, result);
     return result;
 }
 
@@ -212,7 +221,8 @@ void ProcessRules::trigger(const Rule &rule, const QJsonObject &process, const Q
         fields["phase"] = "refused";
         fields["message"] = result.value("message");
         appendLog(rule, process, fields);
-        refused_.insert(identity);
+        // A passing failure is retried after the usual cooldown.
+        if (lasting(result)) refused_.insert(identity);
         return;
     }
     fields["phase"] = "requested";
@@ -351,11 +361,13 @@ QJsonObject ProcessRules::observe(const QJsonObject &snapshot, qint64 monotonicM
         if (!rule) continue;
         const QString identity = identityKey(process);
         seen.insert(identity);
-        if (!inspection(process, identity).value("ok").toBool()) {
-            if (enabled_ && !refused_.contains(identity) && rule->cpuAbove < 0) {
+        const auto check = inspection(process, identity);
+        if (!check.value("ok").toBool()) {
+            // A passing read failure is simply asked again on the next scan.
+            if (enabled_ && lasting(check) && !refused_.contains(identity) && rule->cpuAbove < 0) {
                 refused_.insert(identity);
                 appendLog(*rule, process, {{"phase", "refused"}, {"ok", false}, {"condition", conditionText(*rule)},
-                    {"code", inspection(process, identity).value("code")}, {"message", inspection(process, identity).value("message")}});
+                    {"code", check.value("code")}, {"message", check.value("message")}});
             }
             continue;
         }

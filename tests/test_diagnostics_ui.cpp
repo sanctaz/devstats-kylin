@@ -6,6 +6,8 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -98,6 +100,26 @@ int main(int argc, char **argv) {
     auto *terminate = panel.findChild<QPushButton *>("terminateDiagnosticProcess");
     auto *kill = panel.findChild<QPushButton *>("killDiagnosticProcess");
     auto *addRule = panel.findChild<QPushButton *>("addRuleFromDiagnostics");
+    // A process name that looks like markup is shown as text in its tooltip.
+    {
+        auto *item = tree->topLevelItem(0);
+        const QString original = item->toolTip(0);
+        const auto showTip = [&] {
+            QRect area = tree->visualItemRect(item);
+            area.setWidth(tree->columnWidth(0)); // The row spans every column; the name is in the first.
+            QHelpEvent help(QEvent::ToolTip, area.center(), tree->viewport()->mapToGlobal(area.center()));
+            QApplication::sendEvent(tree->viewport(), &help);
+            return QToolTip::text();
+        };
+        item->setToolTip(0, "<b>evil</b><img src=x>");
+        const QString shown = showTip();
+        check(shown.contains("&lt;b&gt;evil&lt;/b&gt;&lt;img src=x&gt;") && !shown.contains("<b>"), "markup in a tooltip stays text");
+        item->setToolTip(0, "firefox");
+        check(showTip() == "firefox", "an ordinary tooltip is unchanged");
+        QToolTip::hideText();
+        item->setToolTip(0, original);
+        check(DevStatsUI::literal("a < b") == "a < b" && DevStatsUI::literal("<i>x</i>").contains("&lt;i&gt;"), "only text that looks like markup is escaped");
+    }
     auto *closeRun = panel.findChild<QToolButton *>("diagnosticRunClose");
     auto *tabs = panel.findChild<SectionTabs *>("diagnosticsSections");
 

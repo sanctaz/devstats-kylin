@@ -6,6 +6,7 @@
 #include <QSet>
 #include <QString>
 #include <QVector>
+#include <functional>
 
 // Owned by MonitorWorker. Consumes its existing fresh process snapshots; this
 // class has no timer, process enumeration, shell command, or numeric-PID signal.
@@ -34,6 +35,9 @@ public:
     // True while a process is over its limit or an exit is being verified, so
     // the worker samples at its faster cadence only for as long as it matters.
     bool wantsFreshProcesses() const { return enabled_ && (!watches_.isEmpty() || !pending_.isEmpty()); }
+    // Replaces the ownership and protection check (ProcessActions::inspectIdentity),
+    // so tests can make it fail the way a racing /proc read does.
+    void setInspector(std::function<QJsonObject(const QJsonObject &)> inspector) { inspector_ = std::move(inspector); }
 
 private:
     struct Rule {
@@ -73,6 +77,7 @@ private:
     QHash<QString, ExecutableAttempt> executableAttempts_;
     QHash<QString, Watch> watches_;
     QHash<QString, QJsonObject> inspections_;
+    std::function<QJsonObject(const QJsonObject &)> inspector_;
     QSet<QString> refused_, unresponsive_;
     QVector<Pending> pending_;
     qint64 clockHighWater_ = -1, lastScan_ = -1;

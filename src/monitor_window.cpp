@@ -1205,7 +1205,7 @@ void MonitorWindow::setPreferences(bool autoStart, int trayTheme, const QStringL
     if (d->themeCombo) { QSignalBlocker block(d->themeCombo); d->themeCombo->setCurrentIndex(d->trayTheme); }
     if (d->appsList) {
         d->appsList->clear();
-        for (const auto &path : customApps) { auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), d->appsList); item->setData(Qt::UserRole, path); item->setToolTip(path); }
+        for (const auto &path : customApps) { auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), d->appsList); item->setData(Qt::UserRole, path); item->setToolTip(DevStatsUI::literal(path)); }
     }
     while (auto *item = d->customLaunches->takeAt(0)) { delete item->widget(); delete item; }
     if (!customApps.isEmpty()) {
@@ -1216,7 +1216,7 @@ void MonitorWindow::setPreferences(bool autoStart, int trayTheme, const QStringL
         auto *menu = new QMenu(button);
         for (const auto &path : customApps) {
             auto *action = menu->addAction(QFileInfo(path).completeBaseName());
-            action->setToolTip(path);
+            action->setToolTip(DevStatsUI::literal(path));
             connect(action, &QAction::triggered, this, [this, path] { emit quickLaunchRequested("custom:" + path); });
         }
         button->setMenu(menu); button->setPopupMode(QToolButton::InstantPopup);
@@ -1299,7 +1299,7 @@ void MonitorWindow::showSettings() {
     auto *apps = new QListWidget; apps->setObjectName("customApps"); apps->setMinimumHeight(72);
     d->appsList = apps;
     layout->addWidget(apps, 1);
-    for (const auto &path : d->customApps) { auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), apps); item->setData(Qt::UserRole, path); item->setToolTip(path); }
+    for (const auto &path : d->customApps) { auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), apps); item->setData(Qt::UserRole, path); item->setToolTip(DevStatsUI::literal(path)); }
     auto *tools = new QHBoxLayout;
     auto *add = new QPushButton(QStringLiteral("添加应用…"));
     auto *remove = new QPushButton(QStringLiteral("移除选中项"));

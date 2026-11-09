@@ -2,7 +2,9 @@
 #include "ui_theme.h"
 #include "resource_breakdown.h"
 
+#include <QAbstractItemView>
 #include <QHBoxLayout>
+#include <QHelpEvent>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMouseEvent>
@@ -10,12 +12,25 @@
 #include <QPushButton>
 #include <QStyle>
 #include <QToolButton>
+#include <QTextDocument>
+#include <QToolTip>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
 
 namespace DevStatsUI {
+QString literal(const QString &text) {
+    return Qt::mightBeRichText(text) ? QStringLiteral("<p style=\"white-space:pre-wrap\">%1</p>").arg(text.toHtmlEscaped()) : text;
+}
+
+bool literalToolTip(QHelpEvent *event, QAbstractItemView *view, const QModelIndex &index) {
+    const QString text = index.isValid() ? index.data(Qt::ToolTipRole).toString() : QString();
+    QToolTip::showText(event->globalPos(), literal(text), view->viewport(), index.isValid() ? view->visualRect(index) : QRect());
+    event->setAccepted(!text.isEmpty());
+    return !text.isEmpty();
+}
+
 QLabel *label(const QString &text, const char *role, const QString &name) {
     auto *widget = new QLabel(text);
     widget->setTextFormat(Qt::PlainText);
