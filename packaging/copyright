@@ -1,0 +1,14 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: DevStats
+Source: stats-devmonitor/DevMonitor/Linux
+
+Files: *
+Copyright: 2019 Serhiy Mytrovtsiy
+           DevStats contributors
+License: MIT
+ The complete MIT license is installed as /usr/share/doc/devstats/LICENSE.
+
+Comment: DevStats dynamically links the system Qt 5 libraries. Qt 5 is not
+ bundled in this package. Qt is available under LGPL-3.0/GPL-2.0/GPL-3.0
+ or a commercial license; see the installed Qt package copyright files
+ in /usr/share/doc/libqt5core5a/ and https://www.qt.io/licensing/.

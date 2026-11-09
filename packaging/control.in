@@ -1,0 +1,14 @@
+Package: devstats
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: arm64
+Maintainer: DevStats contributors <devstats@localhost>
+Installed-Size: @INSTALLED_SIZE@
+Depends: libc6 (>= 2.31), libstdc++6 (>= 9), libgcc-s1, libqt5core5a (>= 5.12), libqt5gui5 (>= 5.12), libqt5widgets5 (>= 5.12), libqt5network5 (>= 5.12), libqt5sql5 (>= 5.12), libqt5dbus5 (>= 5.12), libqt5sql5-sqlite (>= 5.12)
+Recommends: qtwayland5 (>= 5.12), libglib2.0-bin
+Description: Desktop system monitor with stall diagnosis
+ DevStats monitors CPU, memory, disk, networking and processes, finds out why
+ the desktop stalls, and can end chosen programs when they run or exceed a CPU
+ limit. Built for ARM64 Linux desktops with Qt 5 and glibc 2.31, including
+ Kylin Desktop V10.

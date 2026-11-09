@@ -1,0 +1,423 @@
+#include "diagnostics.h"
+
+#include <QHash>
+#include <QStringList>
+#include <QVector>
+#include <algorithm>
+#include <cmath>
+#include <optional>
+
+namespace {
+using Number = std::optional<double>;
+constexpr double MiB = 1024.0 * 1024.0;
+constexpr double GiB = 1024.0 * MiB;
+
+Number metric(const QJsonValue &value, double maximum = 1e300) {
+    if (!value.isDouble()) return {};
+    const double number = value.toDouble();
+    if (!std::isfinite(number) || number < 0 || number > maximum) return {};
+    return number;
+}
+Number metric(const QJsonObject &object, const char *key, double maximum = 1e300) {
+    return metric(object[key], maximum);
+}
+Number psi(const QJsonObject &pressure, const char *resource, const char *type) {
+    return metric(pressure[resource].toObject()[type].toObject(), "avg10", 100);
+}
+bool atLeast(Number value, double threshold) { return value && *value >= threshold; }
+QString percent(double fraction) { return QString::number(fraction * 100, 'f', 0) + '%'; }
+QString milliseconds(double value) {
+    return value >= 1000 ? QString::number(value / 1000, 'f', 1) + QStringLiteral(" 秒")
+                         : QString::number(value, 'f', 0) + QStringLiteral(" 毫秒");
+}
+QString size(double bytes) {
+    if (bytes >= GiB) return QString::number(bytes / GiB, 'f', 1) + QStringLiteral(" GB");
+    if (bytes >= MiB) return QString::number(bytes / MiB, 'f', 0) + QStringLiteral(" MB");
+    return QString::number(bytes / 1024, 'f', 0) + QStringLiteral(" KB");
+}
+QString cores(double oneCorePercent) { return QString::number(oneCorePercent / 100, 'f', 1) + QStringLiteral(" 核"); }
+
+bool isDisplayStack(const QString &name) {
+    return name == "Xorg" || name == "Xwayland" || name.startsWith("ukui-kwin") || name.startsWith("kwin_") ||
+           name == "ukwm" || name == "mutter" || name == "gnome-shell" || name == "marco" || name == "xfwm4";
+}
+
+// Only evaluated when a finding needs to name a process. Idle snapshots, which
+// are the overwhelming majority, never walk the process list here.
+struct ProcessSurvey {
+    QString cpuName, memoryName, ioName, displayName;
+    double cpu = -1, memory = -1, io = -1, display = -1;
+    QStringList blocked;
+    explicit ProcessSurvey(const QJsonObject &snapshot) {
+        for (const auto *key : {"processes", "systemProcesses"}) {
+            for (const auto &value : snapshot[key].toArray()) {
+                const auto p = value.toObject();
+                const QString name = p["name"].toString();
+                const double usage = p["cpuPercent"].toDouble(-1), rss = p["memoryBytes"].toDouble(-1);
+                const double disk = p["ioReadBytesPerSecond"].toDouble(0) + p["ioWriteBytesPerSecond"].toDouble(0);
+                if (usage > cpu) { cpu = usage; cpuName = name; }
+                if (rss > memory) { memory = rss; memoryName = name; }
+                if (disk > io) { io = disk; ioName = name; }
+                if (isDisplayStack(name) && usage > display) { display = usage; displayName = name; }
+                if (p["state"].toString() == "D" && blocked.size() < 4 && !blocked.contains(name)) blocked.append(name);
+            }
+        }
+    }
+};
+
+struct Finding {
+    int order;
+    QJsonObject json;
+};
+const QStringList Priority = {"oom", "memory", "io", "cpu", "thermal", "interrupt", "forks", "compositor", "display", "responsiveness", "disk", "singleCore"};
+}
+
+QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
+    const auto cpu = snapshot["cpu"].toObject();
+    const auto memory = snapshot["memory"].toObject();
+    const auto pressure = snapshot["pressure"].toObject();
+    const auto vm = snapshot["vm"].toObject();
+    const auto disk = snapshot["diskIO"].toObject();
+    const auto thermal = snapshot["thermal"].toObject();
+    const auto probe = snapshot["responsiveness"].toObject();
+    const auto states = snapshot["processStates"].toObject();
+
+    const Number usage = metric(cpu, "usage", 1), iowait = metric(cpu, "iowait", 1), irq = metric(cpu, "irq", 1);
+    const Number coreCount = metric(cpu, "coreCount"), running = metric(cpu, "runningProcesses");
+    const Number blocked = metric(cpu, "blockedProcesses"), queueWait = metric(cpu, "runQueueWait"), forks = metric(cpu, "forksPerSecond");
+    const auto load = cpu["load"].toArray();
+    const Number load1 = metric(load.isEmpty() ? QJsonValue(QJsonValue::Null) : load[0]);
+    Number loadPerCore;
+    if (coreCount && *coreCount > 0 && load1) loadPerCore = *load1 / *coreCount;
+    const Number total = metric(memory, "totalBytes"), available = metric(memory, "availableBytes");
+    Number availableFraction;
+    if (total && *total > 0 && available && *available <= *total) availableFraction = *available / *total;
+    const Number swapIn = metric(vm, "swapInBytesPerSecond"), swapOut = metric(vm, "swapOutBytesPerSecond");
+    const Number oom = metric(vm, "oomKillDelta");
+    const Number allocStalls = metric(vm, "allocStallsPerSecond"), directScan = metric(vm, "directReclaimPagesPerSecond");
+    const Number cpuSome = psi(pressure, "cpu", "some");
+    const Number memorySome = psi(pressure, "memory", "some"), memoryFull = psi(pressure, "memory", "full");
+    const Number ioSome = psi(pressure, "io", "some"), ioFull = psi(pressure, "io", "full");
+    const Number diskBusy = metric(disk, "busiestUtilization", 1), diskWait = metric(disk, "busiestAwaitMilliseconds");
+    const Number schedulerMax = metric(probe, "schedulerMaxMs"), displayMax = metric(probe, "displayMaxMs");
+    const Number hottest = metric(thermal, "hottestCelsius"), frequency = metric(thermal, "frequencyFraction");
+    const bool psiAvailable = bool(cpuSome) || bool(memorySome) || bool(ioSome);
+
+    std::optional<ProcessSurvey> surveyed;
+    auto survey = [&]() -> const ProcessSurvey & { if (!surveyed) surveyed.emplace(snapshot); return *surveyed; };
+
+    QVector<Finding> findings;
+    bool critical = false;
+    auto add = [&](const char *kind, bool severe, const QString &title, const QStringList &evidence, const QString &suggestion,
+                   const char *action = "none", bool immediate = false) {
+        critical |= severe;
+        findings.append({int(Priority.indexOf(QString::fromLatin1(kind))),
+            QJsonObject{{"kind", QString::fromLatin1(kind)}, {"severity", severe ? "critical" : "attention"},
+                {"title", title}, {"evidence", evidence.join(QStringLiteral(" · "))}, {"suggestion", suggestion},
+                {"action", QString::fromLatin1(action)}, {"immediate", immediate}}});
+    };
+
+    if (atLeast(oom, 1)) {
+        add("oom", true, QStringLiteral("系统内存耗尽，已有进程被内核结束"),
+            {QStringLiteral("本次采样内 OOM 终止 %1 次").arg(*oom, 0, 'f', 0)},
+            QStringLiteral("保存工作，关闭不用的大程序。被结束的进程可用 journalctl -k | grep -i oom 查看。"), "relief", true);
+    }
+
+    // Memory. Used swap or a large cache alone is not a problem; ongoing reclaim is.
+    const bool lowMemory = availableFraction && *availableFraction <= .10;
+    const bool activeSwap = atLeast(swapIn, MiB) || atLeast(swapOut, MiB);
+    const bool directReclaim = atLeast(allocStalls, 1) || atLeast(directScan, 2000);
+    const bool memoryStall = atLeast(memorySome, 5) || atLeast(memoryFull, 1);
+    const bool swapStorm = atLeast(swapIn, 20 * MiB);
+    if ((lowMemory && (activeSwap || directReclaim || memoryStall)) || memoryStall || swapStorm) {
+        const bool severe = (availableFraction && *availableFraction <= .03 && (activeSwap || directReclaim)) ||
+            atLeast(memoryFull, 10) || atLeast(memorySome, 30) || atLeast(allocStalls, 50);
+        QStringList evidence;
+        if (available && availableFraction) evidence << QStringLiteral("可用 %1（%2）").arg(size(*available), percent(*availableFraction));
+        if (activeSwap) evidence << QStringLiteral("换入 %1/s，换出 %2/s").arg(size(swapIn.value_or(0)), size(swapOut.value_or(0)));
+        if (directReclaim) evidence << QStringLiteral("直接回收 %1 次/s").arg(allocStalls.value_or(0), 0, 'f', 0);
+        if (memorySome || memoryFull) evidence << QStringLiteral("内存停顿 %1%").arg(memorySome.value_or(memoryFull.value_or(0)), 0, 'f', 1);
+        const auto &top = survey();
+        add("memory", severe, lowMemory ? QStringLiteral("内存不足，系统正在回收内存") : QStringLiteral("内存回收造成停顿"), evidence,
+            top.memory > 0 ? QStringLiteral("占用最多的是 %1（%2）。保存工作后关闭它或其他不用的程序。").arg(top.memoryName, size(top.memory))
+                           : QStringLiteral("保存工作后关闭不用的程序。"), "relief");
+    }
+
+    // Disk. Device wait time is the direct symptom; PSI and iowait corroborate it.
+    const bool slowDisk = atLeast(diskBusy, .85) && atLeast(diskWait, 50);
+    const bool ioStall = atLeast(ioSome, 10) || atLeast(ioFull, 2);
+    const bool ioWaiting = atLeast(iowait, .20) && atLeast(blocked, 1);
+    if (slowDisk || ioStall || ioWaiting) {
+        const bool severe = atLeast(diskWait, 300) || atLeast(ioFull, 20) || atLeast(ioSome, 50);
+        QStringList evidence;
+        if (diskBusy) evidence << QStringLiteral("%1 繁忙 %2").arg(disk["busiestDevice"].toString(), percent(*diskBusy));
+        if (diskWait) evidence << QStringLiteral("平均等待 %1").arg(milliseconds(*diskWait));
+        if (iowait) evidence << QStringLiteral("iowait %1").arg(percent(*iowait));
+        if (ioSome) evidence << QStringLiteral("I/O 停顿 %1%").arg(*ioSome, 0, 'f', 1);
+        const auto &top = survey();
+        if (!top.blocked.isEmpty()) evidence << QStringLiteral("等待磁盘的进程：%1").arg(top.blocked.join(QStringLiteral("、")));
+        add("io", severe, QStringLiteral("磁盘繁忙，读写响应变慢"), evidence,
+            top.io > 0 ? QStringLiteral("读写最多的是 %1（%2/s）。大文件复制、更新或扫描可错开进行。").arg(top.ioName, size(top.io))
+                       : QStringLiteral("大文件复制、系统更新或安全扫描可错开进行。"), "suspect");
+    }
+
+    // CPU.
+    const bool queueFull = coreCount && *coreCount > 0 && running && *running >= *coreCount;
+    const bool cpuBusy = atLeast(usage, .85) && (atLeast(loadPerCore, .9) || queueFull);
+    // PSI is a ten-second average, so it needs a current reading beside it: otherwise
+    // the finding would outlive the load by half a minute.
+    const bool cpuContention = atLeast(usage, .6) && (atLeast(cpuSome, 15) || atLeast(queueWait, .5));
+    if (cpuBusy || cpuContention) {
+        const bool severe = atLeast(usage, .95) && (atLeast(loadPerCore, 1.5) || atLeast(cpuSome, 30) || atLeast(queueWait, 1.5));
+        QStringList evidence;
+        if (usage) evidence << QStringLiteral("CPU %1").arg(percent(*usage));
+        if (load1 && coreCount) evidence << QStringLiteral("负载 %1 / %2 核").arg(*load1, 0, 'f', 1).arg(*coreCount, 0, 'f', 0);
+        if (queueWait) evidence << QStringLiteral("排队 %1").arg(*queueWait, 0, 'f', 2);
+        if (cpuSome) evidence << QStringLiteral("CPU 停顿 %1%").arg(*cpuSome, 0, 'f', 1);
+        const auto &top = survey();
+        const bool named = top.cpu >= 50;
+        add("cpu", severe, named ? QStringLiteral("CPU 繁忙，占用最高的是 %1（%2）").arg(top.cpuName, cores(top.cpu)) : QStringLiteral("CPU 繁忙，任务正在排队"),
+            evidence, QStringLiteral("确认不需要后可结束下方的进程；经常出现的话可以加入自动查杀。"), "suspect");
+    }
+
+    // A single pegged thread leaves a many-core machine responsive overall, so it
+    // is only worth a hint unless it also feeds one of the findings above.
+    if (!cpuBusy && !cpuContention && snapshot["processesFresh"].toBool()) {
+        const auto &top = survey();
+        if (top.cpu >= 95) {
+            QJsonObject hint{{"kind", "singleCore"}, {"severity", "info"},
+                {"title", QStringLiteral("%1 占满了约 %2").arg(top.cpuName, cores(top.cpu))},
+                {"evidence", QStringLiteral("整机 CPU %1").arg(usage ? percent(*usage) : QStringLiteral("—"))},
+                {"suggestion", QStringLiteral("该程序本身可能无响应，其他程序一般不受影响。")}, {"action", "suspect"}, {"immediate", false}};
+            findings.append({int(Priority.indexOf("singleCore")), hint});
+        }
+    }
+
+    // Thermal limits and frequency caps slow everything without raising any load figure.
+    const bool hot = atLeast(hottest, 90);
+    const bool slowedUnderLoad = atLeast(usage, .7) && frequency && *frequency <= .6;
+    if (hot || slowedUnderLoad) {
+        QStringList evidence;
+        if (hottest) evidence << QStringLiteral("最高 %1 °C（%2）").arg(*hottest, 0, 'f', 0).arg(thermal["hottestZone"].toString());
+        if (frequency) evidence << QStringLiteral("CPU 频率为最高的 %1").arg(percent(*frequency));
+        if (usage) evidence << QStringLiteral("CPU %1").arg(percent(*usage));
+        add("thermal", atLeast(hottest, 100), hot ? QStringLiteral("CPU 温度过高，可能降频") : QStringLiteral("高负载下 CPU 频率偏低"), evidence,
+            thermal["limited"].toBool() ? QStringLiteral("当前频率上限被限制。检查电源模式是否为节能，并清理散热口。")
+                                        : QStringLiteral("检查散热口和电源模式；接通电源通常能恢复频率。"));
+    }
+
+    if (atLeast(irq, .25)) {
+        add("interrupt", atLeast(irq, .5), QStringLiteral("中断处理占用过高"), {QStringLiteral("硬中断和软中断占 %1").arg(percent(*irq))},
+            QStringLiteral("常见于大流量网络或异常设备。可暂时断开外设或网络后对比。"));
+    }
+
+    // CPU that no surviving process accounts for points at many short-lived processes.
+    const Number attributed = metric(snapshot["attributedCpuPercent"]);
+    if (atLeast(forks, 100) && usage && coreCount && attributed && *usage * *coreCount * 100 - *attributed >= 100) {
+        add("forks", false, QStringLiteral("短命进程过多"),
+            {QStringLiteral("每秒新建 %1 个进程").arg(*forks, 0, 'f', 0), QStringLiteral("约 %1 的 CPU 没有归属到存活进程").arg(cores(*usage * *coreCount * 100 - *attributed))},
+            QStringLiteral("通常来自循环调用命令的脚本。检查定时任务或构建脚本。"));
+    }
+
+    if (snapshot["processesFresh"].toBool()) {
+        const auto &top = survey();
+        if (top.display >= 70) {
+            add("compositor", top.display >= 150, QStringLiteral("桌面显示服务占用偏高：%1").arg(top.displayName), {QStringLiteral("占用 %1").arg(cores(top.display))},
+                QStringLiteral("关闭窗口特效或减少高刷新内容（视频、动画）后观察。"));
+        }
+    }
+
+    // Direct measurements of a stall.
+    if (atLeast(displayMax, 500)) {
+        add("display", atLeast(displayMax, 2000), QStringLiteral("桌面显示响应变慢"), {QStringLiteral("显示服务往返 %1（正常低于 20 毫秒）").arg(milliseconds(*displayMax))},
+            QStringLiteral("CPU 不高时多与显卡驱动或窗口合成有关，可关闭窗口特效后对比。"), "none", atLeast(displayMax, 3000));
+    }
+    if (atLeast(schedulerMax, 300)) {
+        const bool frozen = *schedulerMax >= 1000;
+        add("responsiveness", frozen, frozen ? QStringLiteral("系统出现短暂冻结") : QStringLiteral("程序调度明显延迟"),
+            {QStringLiteral("线程被延迟 %1（正常低于 10 毫秒）").arg(milliseconds(*schedulerMax))},
+            QStringLiteral("此时的进程排行最值得查看。"), "suspect", frozen);
+    }
+
+    // Capacity is not a stall by itself, but a nearly full disk causes its own failures.
+    bool diskKnown = false;
+    for (const auto &value : snapshot["disks"].toArray()) {
+        const auto volume = value.toObject();
+        const Number fraction = metric(volume, "usageFraction", 1), free = metric(volume, "availableBytes");
+        if (!fraction || !free) continue;
+        diskKnown = true;
+        if (*fraction < .95 || *free > 2 * GiB) continue;
+        add("disk", *fraction >= .99 && *free <= .5 * GiB, QStringLiteral("磁盘空间不足：%1").arg(volume["mountPoint"].toString()),
+            {QStringLiteral("已用 %1，剩余 %2").arg(percent(*fraction), size(*free))},
+            QStringLiteral("清理大文件或构建产物。"));
+    }
+
+    std::stable_sort(findings.begin(), findings.end(), [](const Finding &a, const Finding &b) {
+        const auto rank = [](const Finding &f) { const auto s = f.json["severity"].toString(); return s == "critical" ? 0 : s == "attention" ? 1 : 2; };
+        return rank(a) != rank(b) ? rank(a) < rank(b) : a.order < b.order;
+    });
+    QJsonArray findingList;
+    int problems = 0;
+    for (const auto &finding : findings) {
+        findingList.append(finding.json);
+        if (finding.json["severity"].toString() != "info") ++problems;
+    }
+
+    QJsonArray coverage;
+    if (!psiAvailable) coverage.append(QStringLiteral("此内核没有 PSI（/proc/pressure），改用调度排队、内存回收和磁盘等待时间判断。"));
+    if (!queueWait) coverage.append(QStringLiteral("调度排队时间不可用（/proc/schedstat）。"));
+    if (!schedulerMax) coverage.append(QStringLiteral("线程调度延迟尚无数据。"));
+    if (!probe["displayAvailable"].toBool()) coverage.append(QStringLiteral("未连接到 X 显示服务，无法测量显示响应。"));
+    if (!hottest && !frequency) coverage.append(QStringLiteral("此设备未提供温度或频率读数。"));
+    if (!diskBusy) coverage.append(QStringLiteral("磁盘繁忙度和等待时间尚无数据。"));
+    if (!diskKnown) coverage.append(QStringLiteral("未读取到文件系统容量。"));
+    coverage.append(QStringLiteral("其他用户和系统进程只能看到 CPU 与内存，不能结束；当前用户的进程才能操作。"));
+    coverage.append(QStringLiteral("GPU 负载、应用内部的锁等待和网络延迟无法直接测量。"));
+
+    const bool known = usage && availableFraction;
+    const QString state = critical ? QStringLiteral("critical") : problems ? QStringLiteral("attention")
+        : known ? QStringLiteral("normal") : QStringLiteral("unknown");
+    QString headline, summary;
+    if (problems) {
+        const auto first = findings.first().json;
+        headline = first["title"].toString();
+        summary = first["evidence"].toString();
+        if (problems > 1) summary += QStringLiteral("。另有 %1 项相关线索。").arg(problems - 1);
+    } else if (known) {
+        headline = QStringLiteral("系统运行流畅");
+        summary = QStringLiteral("CPU %1，可用内存 %2").arg(percent(*usage), size(*available));
+        if (schedulerMax) summary += QStringLiteral("，调度延迟 %1").arg(milliseconds(*schedulerMax));
+    } else {
+        headline = QStringLiteral("正在收集数据");
+        summary = QStringLiteral("首次采样后约 2 秒给出结果。");
+    }
+
+    auto severityOf = [&](const QStringList &kinds) {
+        QString tone = QStringLiteral("ok");
+        for (const auto &finding : findings) {
+            if (!kinds.contains(finding.json["kind"].toString())) continue;
+            const auto severity = finding.json["severity"].toString();
+            if (severity == "critical") return QStringLiteral("critical");
+            if (severity == "attention") tone = QStringLiteral("warn");
+        }
+        return tone;
+    };
+    auto meter = [](const char *key, const QString &label, const QString &value, const QString &detail, const QString &tone, Number fraction) {
+        return QJsonObject{{"key", QString::fromLatin1(key)}, {"label", label}, {"value", value}, {"detail", detail}, {"tone", tone},
+            {"fraction", fraction ? QJsonValue(std::min(1.0, *fraction)) : QJsonValue(QJsonValue::Null)}};
+    };
+    const QString none = QString::fromUtf8("—");
+    const QString cpuDetail = load1 && coreCount
+        ? QStringLiteral("负载 %1 / %2 核").arg(*load1, 0, 'f', 1).arg(*coreCount, 0, 'f', 0) + (queueWait ? QStringLiteral(" · 排队 %1").arg(*queueWait, 0, 'f', 1) : QString())
+        : QStringLiteral("等待采样");
+    const QString memoryDetail = available
+        ? QStringLiteral("可用 %1 · 换页 %2/s").arg(size(*available), size(swapIn.value_or(0) + swapOut.value_or(0))) : QStringLiteral("等待采样");
+    const QString diskDetail = diskBusy
+        ? QStringLiteral("%1 · 等待 %2").arg(disk["busiestDevice"].toString(), diskWait ? milliseconds(*diskWait) : none) + (iowait ? QStringLiteral(" · iowait %1").arg(percent(*iowait)) : QString())
+        : QStringLiteral("等待采样");
+    const QString responseDetail = displayMax ? QStringLiteral("显示服务 %1").arg(milliseconds(*displayMax)) : QStringLiteral("显示服务不可测");
+    const QString thermalDetail = frequency ? QStringLiteral("频率为最高的 %1").arg(percent(*frequency)) : QStringLiteral("频率不可读");
+    const auto runningNow = states["running"], zombies = states["zombie"];
+    const QJsonArray meters{
+        meter("cpu", QStringLiteral("处理器"), usage ? percent(*usage) : none, cpuDetail, !usage ? QStringLiteral("neutral") : severityOf({"cpu", "interrupt", "forks"}), usage),
+        meter("memory", QStringLiteral("内存"), metric(memory, "fraction", 1) ? percent(*metric(memory, "fraction", 1)) : none, memoryDetail, !available ? QStringLiteral("neutral") : severityOf({"memory", "oom"}), metric(memory, "fraction", 1)),
+        meter("disk", QStringLiteral("磁盘繁忙"), diskBusy ? percent(*diskBusy) : none, diskDetail, !diskBusy ? QStringLiteral("neutral") : severityOf({"io"}), diskBusy),
+        meter("response", QStringLiteral("响应延迟"), schedulerMax ? milliseconds(*schedulerMax) : none, responseDetail, !schedulerMax ? QStringLiteral("neutral") : severityOf({"responsiveness", "display", "compositor"}), schedulerMax ? Number(*schedulerMax / 1000) : Number()),
+        meter("thermal", QStringLiteral("温度"), hottest ? QString::number(*hottest, 'f', 0) + QStringLiteral(" °C") : none, thermalDetail, !hottest && !frequency ? QStringLiteral("neutral") : severityOf({"thermal"}), hottest ? Number(*hottest / 100) : Number()),
+        meter("blocked", QStringLiteral("等待磁盘的进程"), blocked ? QString::number(*blocked, 'f', 0) : none,
+              QStringLiteral("运行 %1 · 僵尸 %2").arg(runningNow.isDouble() ? QString::number(runningNow.toInt()) : none, zombies.isDouble() ? QString::number(zombies.toInt()) : none),
+              !blocked ? QStringLiteral("neutral") : atLeast(blocked, 4) ? QStringLiteral("warn") : QStringLiteral("ok"), blocked ? Number(*blocked / 16) : Number())};
+    return {{"state", state}, {"headline", headline}, {"summary", summary}, {"findings", findingList}, {"meters", meters}, {"coverage", coverage}};
+}
+
+int findingPriority(const QString &kind) {
+    const int index = Priority.indexOf(kind);
+    return index < 0 ? Priority.size() : index;
+}
+
+QString suspectBasis(const QJsonObject &diagnosis) {
+    for (const auto &value : diagnosis["findings"].toArray()) {
+        const auto kind = value.toObject()["kind"].toString();
+        if (kind == "memory" || kind == "oom") return QStringLiteral("memory");
+        if (kind == "io") return QStringLiteral("io");
+        if (kind == "cpu" || kind == "responsiveness" || kind == "singleCore") return QStringLiteral("cpu");
+    }
+    return QStringLiteral("cpu");
+}
+
+QJsonArray rankSuspects(const QJsonObject &snapshot, const QString &basis, int limit) {
+    struct Group {
+        QString key, name, owner;
+        bool own = false, kernel = false, cpuKnown = false, ioKnown = false;
+        int count = 0, blocked = 0;
+        double cpu = 0, memory = 0, io = 0, growth = 0;
+        QVector<QJsonObject> members;
+    };
+    auto basisValue = [&basis](double cpu, double memory, double io) { return basis == "memory" ? memory : basis == "io" ? io : cpu; };
+    QHash<QString, QString> applicationNames;
+    for (const auto &value : snapshot["activityApplications"].toArray()) {
+        const auto app = value.toObject();
+        applicationNames.insert(app["identity"].toString(), app["name"].toString());
+    }
+    QHash<QString, Group> groups;
+    auto include = [&](const QJsonObject &p, const QString &key, const QString &name, const QString &owner, bool own) {
+        auto &group = groups[key];
+        if (group.key.isEmpty()) { group.key = key; group.name = name; group.owner = owner; group.own = own; group.kernel = p["kernelThread"].toBool(); }
+        ++group.count;
+        if (p["cpuPercent"].isDouble()) { group.cpu += p["cpuPercent"].toDouble(); group.cpuKnown = true; }
+        group.memory += p["memoryBytes"].toDouble(0);
+        if (p["ioReadBytesPerSecond"].isDouble() || p["ioWriteBytesPerSecond"].isDouble()) {
+            group.io += p["ioReadBytesPerSecond"].toDouble(0) + p["ioWriteBytesPerSecond"].toDouble(0); group.ioKnown = true;
+        }
+        group.growth += p["memoryGrowthBytesPerSecond"].toDouble(0);
+        if (p["state"].toString() == "D") ++group.blocked;
+        group.members.append(p);
+    };
+    for (const auto &value : snapshot["processes"].toArray()) {
+        const auto p = value.toObject();
+        const QString identity = p["applicationIdentity"].toString();
+        const QString key = identity.isEmpty() ? QStringLiteral("pid:%1:%2").arg(p["pid"].toDouble(), 0, 'f', 0).arg(p["startTicks"].toDouble(), 0, 'f', 0) : QStringLiteral("app:") + identity;
+        include(p, key, applicationNames.value(identity, p["name"].toString()), QString(), true);
+    }
+    for (const auto &value : snapshot["systemProcesses"].toArray()) {
+        const auto p = value.toObject();
+        // Kernel workers differ only in their queue suffix: kworker/u8:2 and kworker/3:1.
+        const QString name = p["name"].toString().section('/', 0, 0);
+        include(p, QStringLiteral("sys:") + name + ':' + p["owner"].toString(), name, p["owner"].toString(), false);
+    }
+    QVector<Group> ordered;
+    ordered.reserve(groups.size());
+    for (const auto &group : groups) ordered.append(group);
+    std::sort(ordered.begin(), ordered.end(), [&](const Group &a, const Group &b) {
+        // Anyone stuck on the disk leads an I/O diagnosis, whatever its throughput.
+        if (basis == "io" && (a.blocked > 0) != (b.blocked > 0)) return a.blocked > 0;
+        const double left = basisValue(a.cpu, a.memory, a.io), right = basisValue(b.cpu, b.memory, b.io);
+        if (left != right) return left > right;
+        if (a.cpu != b.cpu) return a.cpu > b.cpu;
+        if (a.memory != b.memory) return a.memory > b.memory;
+        return a.key < b.key;
+    });
+    const double coreCount = std::max(1.0, snapshot["cpu"].toObject()["coreCount"].toDouble(1));
+    const double totalMemory = snapshot["memory"].toObject()["totalBytes"].toDouble(0);
+    QJsonArray result;
+    for (auto &group : ordered) {
+        if (result.size() >= limit) break;
+        std::sort(group.members.begin(), group.members.end(), [&](const QJsonObject &a, const QJsonObject &b) {
+            auto value = [&](const QJsonObject &p) { return basisValue(p["cpuPercent"].toDouble(-1), p["memoryBytes"].toDouble(-1), p["ioReadBytesPerSecond"].toDouble(0) + p["ioWriteBytesPerSecond"].toDouble(0)); };
+            return value(a) > value(b);
+        });
+        QJsonArray members;
+        for (int i = 0; i < std::min(8, group.members.size()); ++i) members.append(group.members[i]);
+        QStringList reason;
+        if (group.blocked) reason << QStringLiteral("%1 个进程在等待磁盘").arg(group.blocked);
+        if (group.cpu >= 25) reason << QStringLiteral("约占全机 CPU 的 %1").arg(percent(std::min(1.0, group.cpu / (coreCount * 100))));
+        if (totalMemory > 0 && group.memory >= totalMemory * .1) reason << QStringLiteral("占内存 %1").arg(percent(group.memory / totalMemory));
+        if (group.growth >= 5 * MiB) reason << QStringLiteral("内存增长 %1/s").arg(size(group.growth));
+        if (group.io >= 5 * MiB) reason << QStringLiteral("读写 %1/s").arg(size(group.io));
+        result.append(QJsonObject{{"key", group.key}, {"name", group.name}, {"owner", group.owner}, {"own", group.own}, {"kernelThread", group.kernel},
+            {"processCount", group.count}, {"cpuPercent", group.cpuKnown ? QJsonValue(group.cpu) : QJsonValue(QJsonValue::Null)},
+            {"memoryBytes", group.memory}, {"ioBytesPerSecond", group.ioKnown ? QJsonValue(group.io) : QJsonValue(QJsonValue::Null)},
+            {"blockedCount", group.blocked}, {"reason", reason.join(QStringLiteral(" · "))}, {"members", members}});
+    }
+    return result;
+}

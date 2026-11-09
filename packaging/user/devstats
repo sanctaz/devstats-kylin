@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# DevStats private runtime applies only to this executable and is restored by it
+# before launching user commands. Do not source this launcher.
+set -euo pipefail
+launcher=$(readlink -f -- "$0")
+bundle=$(cd -- "$(dirname -- "$launcher")" && pwd -P)
+[[ -x $bundle/libexec/devstats ]] || { printf 'Incomplete DevStats bundle.\n' >&2; exit 1; }
+for name in LD_LIBRARY_PATH QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QT_QPA_PLATFORMTHEME QML2_IMPORT_PATH; do
+    backup="DEVSTATS_ORIGINAL_$name"
+    marker="${backup}_SET"
+    if declare -p "$name" >/dev/null 2>&1; then printf -v "$backup" '%s' "${!name}"; printf -v "$marker" 1
+    else printf -v "$backup" ''; printf -v "$marker" 0; fi
+    export "$backup" "$marker"
+done
+export DEVSTATS_LAUNCHER_PATH="$bundle/devstats"
+export LD_LIBRARY_PATH="$bundle/lib"
+export QT_PLUGIN_PATH="$bundle/plugins"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$bundle/plugins/platforms"
+unset QT_QPA_PLATFORMTHEME QML2_IMPORT_PATH
+exec "$bundle/libexec/devstats" "$@"

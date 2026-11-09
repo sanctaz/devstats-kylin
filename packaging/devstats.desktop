@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DevStats
+Name[zh_CN]=DevStats 系统监视器
+Comment=System monitor and stall diagnosis
+Comment[zh_CN]=系统资源监视与卡顿诊断
+Exec=devstats
+TryExec=devstats
+Icon=devstats
+Terminal=false
+Categories=System;Monitor;
+StartupNotify=true
+StartupWMClass=devstats
