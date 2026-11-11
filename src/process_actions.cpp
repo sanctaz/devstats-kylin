@@ -1,4 +1,5 @@
 #include "process_actions.h"
+#include "i18n.h"
 
 #include <QDir>
 #include <QFile>
@@ -202,29 +203,29 @@ bool ancestry(pid_t pid, QSet<pid_t> &result) {
 
 QJsonObject validate(const Identity &expected, const Process &process) {
     if (expected.pid != process.identity.pid || expected.start != process.identity.start)
-        return failure("staleIdentity", QStringLiteral("进程已退出或 PID 已被复用，请刷新后重试。"));
+        return failure("staleIdentity", T("进程已退出或 PID 已被复用，请刷新后重试。"));
     if (expected.executable != process.identity.executable)
-        return failure("executableChanged", QStringLiteral("进程程序已变化，请刷新后重新选择。"));
+        return failure("executableChanged", T("进程程序已变化，请刷新后重新选择。"));
     if (process.state == 'Z' || process.state == 'X' || process.state == 'x')
-        return failure("exited", QStringLiteral("进程已退出，无需请求结束。"));
+        return failure("exited", T("进程已退出，无需请求结束。"));
     if (!ownedBy(process, ::getuid()))
-        return failure("notOwned", QStringLiteral("只能操作当前普通用户拥有且未提权的进程。"));
+        return failure("notOwned", T("只能操作当前普通用户拥有且未提权的进程。"));
     const pid_t self = ::getpid();
     QSet<pid_t> ownAncestors, targetAncestors;
     if (!ancestry(self, ownAncestors) || !ancestry(process.identity.pid, targetAncestors))
-        return failure("ancestryUnavailable", QStringLiteral("无法确认进程关系，为保护会话已禁用此操作。"));
+        return failure("ancestryUnavailable", T("无法确认进程关系，为保护会话已禁用此操作。"));
     if (ownAncestors.contains(process.identity.pid) || targetAncestors.contains(self))
-        return failure("protectedProcess", QStringLiteral("监控程序、其辅助进程及上级会话进程受到保护。"));
+        return failure("protectedProcess", T("监控程序、其辅助进程及上级会话进程受到保护。"));
     Descriptor ownDirectory(openProcess(self));
     Process own;
     if (ownDirectory.value < 0 || !readProcess(ownDirectory.value, own))
-        return failure("identityUnavailable", QStringLiteral("无法确认监控程序身份，已禁用此操作。"));
+        return failure("identityUnavailable", T("无法确认监控程序身份，已禁用此操作。"));
     const QString name = QFileInfo(process.identity.executable).fileName();
     const bool monitorSibling = QFileInfo(process.identity.executable).absolutePath() ==
                                 QFileInfo(own.identity.executable).absolutePath() &&
                                 name == "devstats";
     if (process.identity.executable == own.identity.executable || monitorSibling || importantSession(process))
-        return failure("protectedProcess", QStringLiteral("监控、桌面、终端或会话基础进程受到保护，请使用系统监视器查看。"));
+        return failure("protectedProcess", T("监控、桌面、终端或会话基础进程受到保护，请使用系统监视器查看。"));
     return {{"ok", true}, {"canTerminate", false}, {"pid", double(expected.pid)},
             {"startTicks", double(expected.start)}, {"executablePath", expected.executable}};
 }
@@ -244,21 +245,21 @@ int signalDescriptor(int descriptor, int signal) {
 
 QJsonObject signalFailure(int error) {
     if (error == ENOSYS || error == EINVAL || error == EBADF || error == ENODEV)
-        return failure("unsupportedKernel", QStringLiteral("当前内核不支持安全的进程句柄操作，无法请求结束。请使用系统监视器。"));
+        return failure("unsupportedKernel", T("当前内核不支持安全的进程句柄操作，无法请求结束。请使用系统监视器。"));
     if (error == EPERM || error == EACCES)
-        return failure("permissionDenied", QStringLiteral("系统策略不允许操作此进程，请使用系统监视器查看。"));
+        return failure("permissionDenied", T("系统策略不允许操作此进程，请使用系统监视器查看。"));
     if (error == ESRCH || error == ENOENT)
-        return failure("exited", QStringLiteral("进程已退出，请刷新列表。"));
-    return failure("operationFailed", QStringLiteral("无法安全操作此进程（系统错误 %1）。").arg(error));
+        return failure("exited", T("进程已退出，请刷新列表。"));
+    return failure("operationFailed", T("无法安全操作此进程（系统错误 %1）。").arg(error));
 }
 
 // signalNumber 0 runs every check and the capability probe without signalling.
 QJsonObject operate(const QJsonObject &json, int signalNumber) {
     Identity expected;
     if (!parseIdentity(json, expected))
-        return failure("invalidIdentity", QStringLiteral("缺少有效的进程身份，请刷新后重新选择。"));
+        return failure("invalidIdentity", T("缺少有效的进程身份，请刷新后重新选择。"));
     if (::getuid() == 0 || ::geteuid() != ::getuid())
-        return failure("privilegedMonitor", QStringLiteral("此操作仅供未提权的普通用户使用，请以普通用户运行 DevStats。"));
+        return failure("privilegedMonitor", T("此操作仅供未提权的普通用户使用，请以普通用户运行 DevStats。"));
     // One proc directory pins the identity for every openat/readlinkat and the
     // final signal. pidfd_send_signal(2) explicitly supports /proc/PID fds:
     // https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html
@@ -268,7 +269,7 @@ QJsonObject operate(const QJsonObject &json, int signalNumber) {
     if (directory.value < 0) return signalFailure(errno);
     Process process;
     if (!readProcess(directory.value, process))
-        return failure("identityUnavailable", QStringLiteral("进程已退出或身份不可读取，请刷新列表。"));
+        return failure("identityUnavailable", T("进程已退出或身份不可读取，请刷新列表。"));
     QJsonObject result = validate(expected, process);
     if (!result.value("ok").toBool()) return result;
     if (signalDescriptor(directory.value, 0) != 0) return signalFailure(errno);
@@ -276,15 +277,15 @@ QJsonObject operate(const QJsonObject &json, int signalNumber) {
     // directly before sending the one user-requested signal to the same fd.
     Process fresh;
     if (!readProcess(directory.value, fresh))
-        return failure("identityUnavailable", QStringLiteral("进程身份已变化，请刷新后重新选择。"));
+        return failure("identityUnavailable", T("进程身份已变化，请刷新后重新选择。"));
     result = validate(expected, fresh);
     if (!result.value("ok").toBool()) return result;
     if (signalNumber && signalDescriptor(directory.value, signalNumber) != 0) return signalFailure(errno);
     result["canTerminate"] = true;
     result["code"] = signalNumber == SIGKILL ? "killed" : signalNumber ? "requested" : "ready";
-    result["message"] = signalNumber == SIGKILL ? QStringLiteral("已强制结束所选进程（SIGKILL）。未保存的内容已丢失。")
-                        : signalNumber ? QStringLiteral("已向所选进程发送结束请求（SIGTERM）。程序可能需要时间退出，也可能拒绝请求。")
-                                       : QStringLiteral("可结束此进程；未保存的数据和正在运行的任务可能丢失。");
+    result["message"] = signalNumber == SIGKILL ? T("已强制结束所选进程（SIGKILL）。未保存的内容已丢失。")
+                        : signalNumber ? T("已向所选进程发送结束请求（SIGTERM）。程序可能需要时间退出，也可能拒绝请求。")
+                                       : T("可结束此进程；未保存的数据和正在运行的任务可能丢失。");
     if (signalNumber) result["signal"] = signalNumber;
     return result;
 }
@@ -293,17 +294,17 @@ QJsonObject operate(const QJsonObject &json, int signalNumber) {
 QJsonObject ProcessActions::inspectIdentity(const QJsonObject &identity) const {
     Identity expected;
     if (!parseIdentity(identity, expected))
-        return failure("invalidIdentity", QStringLiteral("缺少有效的进程身份，请刷新后重新选择。"));
+        return failure("invalidIdentity", T("缺少有效的进程身份，请刷新后重新选择。"));
     if (::getuid() == 0 || ::geteuid() != ::getuid())
-        return failure("privilegedMonitor", QStringLiteral("此操作仅供未提权的普通用户使用，请以普通用户运行 DevStats。"));
+        return failure("privilegedMonitor", T("此操作仅供未提权的普通用户使用，请以普通用户运行 DevStats。"));
     Descriptor directory(openProcess(expected.pid));
     Process process;
     if (directory.value < 0 || !readProcess(directory.value, process))
-        return failure("identityUnavailable", QStringLiteral("进程已退出或身份不可读取，请刷新列表。"));
+        return failure("identityUnavailable", T("进程已退出或身份不可读取，请刷新列表。"));
     QJsonObject result = validate(expected, process);
     if (result.value("ok").toBool()) {
         result["code"] = "identityReady";
-        result["message"] = QStringLiteral("已核对当前普通用户进程身份及会话保护规则。");
+        result["message"] = T("已核对当前普通用户进程身份及会话保护规则。");
     }
     return result;
 }
@@ -315,7 +316,7 @@ QJsonObject ProcessActions::inspect(const QJsonObject &identity) const {
 QJsonObject ProcessActions::execute(const QJsonObject &identity, const QString &action) const {
     if (action == QStringLiteral("terminate")) return operate(identity, SIGTERM);
     if (action == QStringLiteral("kill")) return operate(identity, SIGKILL);
-    return failure("unsupportedAction", QStringLiteral("不支持此进程操作。"));
+    return failure("unsupportedAction", T("不支持此进程操作。"));
 }
 
 bool ProcessActions::isRunning(const QJsonObject &identity) const {

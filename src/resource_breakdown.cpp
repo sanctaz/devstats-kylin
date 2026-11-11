@@ -1,4 +1,5 @@
 #include "resource_breakdown.h"
+#include "i18n.h"
 #include "charts.h"
 #include "ui_theme.h"
 #include "ui_components.h"
@@ -21,7 +22,7 @@ QColor blend(const QColor &a, const QColor &b, double weight) {
 ResourceBreakdown::ResourceBreakdown(QWidget *parent) : QWidget(parent) {
     setFixedHeight(46);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setAccessibleName(QStringLiteral("资源分布"));
+    setAccessibleName(T("资源分布"));
     setSegments({});
 }
 
@@ -39,7 +40,7 @@ void ResourceBreakdown::setSegments(const QVector<Segment> &segments) {
     QStringList descriptions;
     for (const auto &segment : segments_)
         descriptions.append(segment.label + " " + (segment.detail.isEmpty() ? formatPercent(segment.fraction) : segment.detail));
-    const auto description = descriptions.isEmpty() ? QStringLiteral("暂无有效采样") : descriptions.join(QStringLiteral(" · "));
+    const auto description = descriptions.isEmpty() ? T("暂无有效采样") : descriptions.join(QStringLiteral(" · "));
     setAccessibleDescription(description); setToolTip(description);
     setProperty("segmentCount", segments_.size());
     update();

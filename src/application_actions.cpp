@@ -1,4 +1,5 @@
 #include "application_actions.h"
+#include "i18n.h"
 #include "process_actions.h"
 
 #include <QCryptographicHash>
@@ -33,10 +34,10 @@ QJsonObject failure(const QString &code, const QString &message) {
 
 QJsonObject validateIdentities(const QJsonArray &identities, QMap<qint64, QJsonObject> &processes) {
     if (identities.isEmpty() || identities.size() > MaximumProcesses)
-        return failure("invalidSelection", QStringLiteral("请选择 1–64 个应用进程，再查看可正常关闭的窗口。"));
+        return failure("invalidSelection", T("请选择 1–64 个应用进程，再查看可正常关闭的窗口。"));
     const ProcessActions actions;
     for (const auto &value : identities) {
-        if (!value.isObject()) return failure("invalidIdentity", QStringLiteral("进程身份无效，请刷新后重新选择。"));
+        if (!value.isObject()) return failure("invalidIdentity", T("进程身份无效，请刷新后重新选择。"));
         QJsonObject identity = actions.inspectIdentity(value.toObject());
         if (!identity.value("ok").toBool()) {
             identity["canClose"] = false;
@@ -46,7 +47,7 @@ QJsonObject validateIdentities(const QJsonArray &identities, QMap<qint64, QJsonO
         }
         const qint64 pid = qint64(identity.value("pid").toDouble());
         if (processes.contains(pid))
-            return failure("duplicateIdentity", QStringLiteral("应用进程重复，请重新选择。"));
+            return failure("duplicateIdentity", T("应用进程重复，请重新选择。"));
         processes.insert(pid, {{"pid", identity.value("pid")},
                                {"startTicks", identity.value("startTicks")},
                                {"executablePath", identity.value("executablePath")}});
@@ -165,7 +166,7 @@ QString displayTitle(QString text) {
             text[i] = QLatin1Char(' ');
     }
     text = text.simplified().left(240);
-    return text.isEmpty() ? QStringLiteral("（无标题窗口）") : text;
+    return text.isEmpty() ? T("（无标题窗口）") : text;
 }
 
 QString digest(const QList<Property> &properties) {
@@ -188,22 +189,22 @@ QJsonObject enumerate(XApi &x, Display *display, const Atoms &a, const QByteArra
     if (!property(x, display, x.XDefaultRootWindow(display), a.clients, clients, MaximumClients) ||
         !clients.present || clients.type != XA_WINDOW || clients.format != 32 ||
         clients.words.size() > MaximumClients)
-        return failure("windowListUnavailable", QStringLiteral("桌面未提供可信的应用窗口列表，无法正常关窗。"));
+        return failure("windowListUnavailable", T("桌面未提供可信的应用窗口列表，无法正常关窗。"));
     QSet<quint32> unique;
     QSet<qint64> represented;
     QList<quint32> sorted = clients.words;
     std::sort(sorted.begin(), sorted.end());
     if (expectedClients && sorted != *expectedClients)
-        return failure("windowSetChanged", QStringLiteral("桌面窗口列表已变化，请重新查看并确认，未发送关窗请求。"));
+        return failure("windowSetChanged", T("桌面窗口列表已变化，请重新查看并确认，未发送关窗请求。"));
     if (recordClients) *recordClients = sorted;
     for (quint32 id : sorted) {
         if (id == 0 || unique.contains(id))
-            return failure("windowListChanged", QStringLiteral("桌面窗口列表异常，请刷新后重试。"));
+            return failure("windowListChanged", T("桌面窗口列表异常，请刷新后重试。"));
         unique.insert(id);
         if (limitTo && !limitTo->contains(id)) continue;
         Property pid;
         if (!property(x, display, Window(id), a.pid, pid))
-            return failure("windowChanged", QStringLiteral("桌面窗口已变化，请重新确认。"));
+            return failure("windowChanged", T("桌面窗口已变化，请重新确认。"));
         // Unrelated or legacy windows without PID cannot be associated with a
         // selected process. Never guess from titles, classes or process names.
         if (pid.type != XA_CARDINAL || pid.format != 32 || pid.words.size() != 1 ||
@@ -215,24 +216,24 @@ QJsonObject enumerate(XApi &x, Display *display, const Atoms &a, const QByteArra
             !property(x, display, Window(id), a.netName, title, 1024) ||
             !property(x, display, Window(id), a.name, legacyTitle, 1024) ||
             !property(x, display, Window(id), a.type, type, 64))
-            return failure("windowChanged", QStringLiteral("无法完整核对应用窗口，请刷新后重试。"));
+            return failure("windowChanged", T("无法完整核对应用窗口，请刷新后重试。"));
         if (host.type != XA_STRING || host.format != 8 || host.bytes != hostname)
-            return failure("foreignWindow", QStringLiteral("应用窗口未声明本机主机名，无法安全关联本机进程。"));
+            return failure("foreignWindow", T("应用窗口未声明本机主机名，无法安全关联本机进程。"));
         if (protocols.type != XA_ATOM || protocols.format != 32 ||
             !protocols.words.contains(quint32(a.deleteWindow)))
-            return failure("closeUnsupported", QStringLiteral("所选应用有窗口不支持正常关闭协议，请在应用内操作。"));
+            return failure("closeUnsupported", T("所选应用有窗口不支持正常关闭协议，请在应用内操作。"));
         // Do not close desktop/dock/menu/splash/notification windows, even if a
         // client labels one with a selected PID. Legacy type-less windows are
         // ordinary ICCCM windows; explicitly typed windows must be normal/dialog.
         if (type.present && (type.type != XA_ATOM || type.format != 32 ||
             type.words.isEmpty() || (type.words[0] != a.normal && type.words[0] != a.dialog)))
-            return failure("protectedWindow", QStringLiteral("桌面、面板及非普通应用窗口受到保护。"));
+            return failure("protectedWindow", T("桌面、面板及非普通应用窗口受到保护。"));
         XWindowAttributes attributes{};
         if (!x.XGetWindowAttributes(display, Window(id), &attributes) ||
             attributes.c_class != InputOutput || attributes.override_redirect)
-            return failure("protectedWindow", QStringLiteral("此窗口不是可正常关闭的普通应用窗口。"));
+            return failure("protectedWindow", T("此窗口不是可正常关闭的普通应用窗口。"));
         if (windows.size() >= MaximumWindows)
-            return failure("tooManyWindows", QStringLiteral("一次最多关闭 32 个窗口，请缩小应用选择范围。"));
+            return failure("tooManyWindows", T("一次最多关闭 32 个窗口，请缩小应用选择范围。"));
         const auto identity = processes.value(processId);
         QString text;
         if (title.type == a.utf8 && title.format == 8) text = QString::fromUtf8(title.bytes);
@@ -247,7 +248,7 @@ QJsonObject enumerate(XApi &x, Display *display, const Atoms &a, const QByteArra
         represented.insert(processId);
     }
     if (windows.isEmpty() || represented.size() != processes.size())
-        return failure("noApplicationWindows", QStringLiteral("部分所选进程没有可核对的应用窗口；后台服务或窗口缺少身份信息时无法正常关窗。"));
+        return failure("noApplicationWindows", T("部分所选进程没有可核对的应用窗口；后台服务或窗口缺少身份信息时无法正常关窗。"));
     return {{"ok", true}};
 }
 
@@ -301,20 +302,20 @@ void ApplicationActions::discard() const {
 QJsonObject ApplicationActions::inspect(const QJsonArray &identities) const {
 #ifndef Q_OS_LINUX
     Q_UNUSED(identities)
-    return failure("unsupportedPlatform", QStringLiteral("正常关窗仅适用于本机 Linux X11 桌面。"));
+    return failure("unsupportedPlatform", T("正常关窗仅适用于本机 Linux X11 桌面。"));
 #else
     QMutexLocker locker(&xMutex);
     snapshot_.reset();
     if (!localEnvironment())
-        return failure("unsupportedSession", QStringLiteral("正常关窗需要本机 X11 桌面；Wayland 或远程显示会话暂不支持。"));
+        return failure("unsupportedSession", T("正常关窗需要本机 X11 桌面；Wayland 或远程显示会话暂不支持。"));
     auto snapshot = std::make_unique<Snapshot>();
     QJsonObject result = validateIdentities(identities, snapshot->processes);
     if (!result.value("ok").toBool()) return result;
     if (!snapshot->x.load() || !(snapshot->display = snapshot->x.XOpenDisplay(nullptr)))
-        return failure("x11Unavailable", QStringLiteral("无法连接本机 X11 桌面，请在应用内关闭窗口。"));
+        return failure("x11Unavailable", T("无法连接本机 X11 桌面，请在应用内关闭窗口。"));
     char hostname[256]{};
     if (::gethostname(hostname, sizeof(hostname)) != 0 || !hostname[0] || hostname[255] != '\0')
-        return failure("hostnameUnavailable", QStringLiteral("无法确认本机主机名，正常关窗已禁用。"));
+        return failure("hostnameUnavailable", T("无法确认本机主机名，正常关窗已禁用。"));
     snapshot->hostname = QByteArray(hostname);
     snapshot->displayName = qgetenv("DISPLAY");
     snapshot->id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -329,16 +330,16 @@ QJsonObject ApplicationActions::inspect(const QJsonArray &identities) const {
         snapshot->x.XSelectInput(snapshot->display,
             Window(value.toObject().value("windowId").toString().toULongLong()), StructureNotifyMask);
     if (!errors.synced())
-        return failure("windowChanged", QStringLiteral("应用窗口已变化，请重新确认。"));
+        return failure("windowChanged", T("应用窗口已变化，请重新确认。"));
     QJsonArray checked;
     result = enumerate(snapshot->x, snapshot->display, atoms, snapshot->hostname,
                        snapshot->processes, snapshot->id, checked, nullptr, &snapshot->clientIds);
     if (!result.value("ok").toBool() || checked != snapshot->windows || !errors.synced())
-        return failure("windowChanged", QStringLiteral("应用窗口已变化，请重新确认。"));
+        return failure("windowChanged", T("应用窗口已变化，请重新确认。"));
     snapshot->age.start();
     result = {{"ok", true}, {"canClose", true}, {"code", "ready"},
               {"windowCount", snapshot->windows.size()}, {"windows", snapshot->windows},
-              {"message", QStringLiteral("可请求正常关闭这些应用窗口。应用可提示保存或拒绝关闭；关窗不保证程序退出或立即释放内存。")}};
+              {"message", T("可请求正常关闭这些应用窗口。应用可提示保存或拒绝关闭；关窗不保证程序退出或立即释放内存。")}};
     snapshot_ = std::move(snapshot);
     const QString id = snapshot_->id;
     // Cancelled dialogs must not retain a live event subscription indefinitely.
@@ -355,27 +356,27 @@ QJsonObject ApplicationActions::close(const QJsonArray &identities, const QJsonA
 #ifndef Q_OS_LINUX
     Q_UNUSED(identities)
     Q_UNUSED(expectedWindows)
-    return failure("unsupportedPlatform", QStringLiteral("正常关窗仅适用于本机 Linux X11 桌面。"));
+    return failure("unsupportedPlatform", T("正常关窗仅适用于本机 Linux X11 桌面。"));
 #else
     QMutexLocker locker(&xMutex);
     auto snapshot = std::move(snapshot_); // Every attempt consumes confirmation.
     if (!snapshot || !snapshot->age.isValid() || snapshot->age.elapsed() > SnapshotLifetimeMs ||
         expectedWindows.isEmpty() || expectedWindows != snapshot->windows)
-        return failure("confirmationExpired", QStringLiteral("关窗确认已过期或窗口选择已变化，请重新查看并确认。"));
+        return failure("confirmationExpired", T("关窗确认已过期或窗口选择已变化，请重新查看并确认。"));
     if (!localEnvironment() || qgetenv("DISPLAY") != snapshot->displayName)
-        return failure("unsupportedSession", QStringLiteral("桌面会话已变化，请重新查看应用窗口。"));
+        return failure("unsupportedSession", T("桌面会话已变化，请重新查看应用窗口。"));
     QMap<qint64, QJsonObject> freshProcesses;
     QJsonObject result = validateIdentities(identities, freshProcesses);
     if (!result.value("ok").toBool()) return result;
     if (freshProcesses != snapshot->processes)
-        return failure("selectionChanged", QStringLiteral("进程选择或身份已变化，请重新查看并确认。"));
+        return failure("selectionChanged", T("进程选择或身份已变化，请重新查看并确认。"));
     XApi &x = snapshot->x;
     Display *display = snapshot->display;
     ErrorTrap errors(x, display);
     const Atoms atoms(x, display);
     x.XSync(display, False);
     if (invalidatedEvents(x, display))
-        return failure("windowReplaced", QStringLiteral("确认期间窗口已销毁或变化过多，请重新确认窗口。"));
+        return failure("windowReplaced", T("确认期间窗口已销毁或变化过多，请重新确认窗口。"));
     // Confirmation UI and unrelated applications may create or remove windows.
     // Enumerate outside the grab and compare only selected process windows to
     // the confirmed tokens. Capture this fresh root list for the short atomic
@@ -386,7 +387,7 @@ QJsonObject ApplicationActions::close(const QJsonArray &identities, const QJsonA
                        preflightWindows, &preflightClients);
     if (!result.value("ok").toBool()) return result;
     if (preflightWindows != expectedWindows || !errors.synced())
-        return failure("windowSetChanged", QStringLiteral("所选应用的窗口或标题已变化，未发送关窗请求，请重新确认。"));
+        return failure("windowSetChanged", T("所选应用的窗口或标题已变化，未发送关窗请求，请重新确认。"));
     // Keep the grab limited to bounded X requests. No /proc reads, confirmation,
     // waits, DNS, file I/O or application response handling happen while held.
     QSet<quint32> confirmedIds;
@@ -395,7 +396,7 @@ QJsonObject ApplicationActions::close(const QJsonArray &identities, const QJsonA
     ServerGrab grab(x, display);
     x.XSync(display, False);
     if (invalidatedEvents(x, display))
-        return failure("windowReplaced", QStringLiteral("确认期间窗口已销毁或变化过多，请重新确认窗口。"));
+        return failure("windowReplaced", T("确认期间窗口已销毁或变化过多，请重新确认窗口。"));
     QJsonArray freshWindows;
     // Only the <=32 confirmed windows are re-read while grabbed. The root list
     // must still match the close preflight, closing the preflight-to-send race.
@@ -403,7 +404,7 @@ QJsonObject ApplicationActions::close(const QJsonArray &identities, const QJsonA
                        nullptr, &preflightClients, &confirmedIds);
     if (!result.value("ok").toBool()) return result;
     if (freshWindows != expectedWindows || !errors.synced())
-        return failure("windowSetChanged", QStringLiteral("应用窗口或标题已变化，未发送关窗请求，请重新确认。"));
+        return failure("windowSetChanged", T("应用窗口或标题已变化，未发送关窗请求，请重新确认。"));
     // ICCCM 4.2.8.1: a WM_PROTOCOLS ClientMessage containing WM_DELETE_WINDOW.
     // Never XKillClient/XDestroyWindow, numeric-PID kill, or a signal fallback.
     // EWMH PID + WM_CLIENT_MACHINE are cooperative desktop hints, not an X11
@@ -423,12 +424,12 @@ QJsonObject ApplicationActions::close(const QJsonArray &identities, const QJsonA
     }
     const bool delivered = errors.synced();
     if (!delivered || sent != expectedWindows.size()) {
-        result = failure("deliveryFailed", QStringLiteral("部分关窗请求可能未送达，请在应用内检查窗口状态。"));
+        result = failure("deliveryFailed", T("部分关窗请求可能未送达，请在应用内检查窗口状态。"));
         result["requestedCount"] = sent;
         return result;
     }
     return {{"ok", true}, {"canClose", false}, {"code", "requested"},
             {"requestedCount", sent}, {"windowCount", sent},
-            {"message", QStringLiteral("已请求正常关闭 %1 个窗口。请处理应用的保存提示；应用可能继续运行，内存释放情况以刷新后的采样为准。").arg(sent)}};
+            {"message", T("已请求正常关闭 %1 个窗口。请处理应用的保存提示；应用可能继续运行，内存释放情况以刷新后的采样为准。").arg(sent)}};
 #endif
 }

@@ -1,4 +1,5 @@
 #include "diagnostics.h"
+#include "i18n.h"
 
 #include <QHash>
 #include <QStringList>
@@ -27,15 +28,15 @@ Number psi(const QJsonObject &pressure, const char *resource, const char *type) 
 bool atLeast(Number value, double threshold) { return value && *value >= threshold; }
 QString percent(double fraction) { return QString::number(fraction * 100, 'f', 0) + '%'; }
 QString milliseconds(double value) {
-    return value >= 1000 ? QString::number(value / 1000, 'f', 1) + QStringLiteral(" 秒")
-                         : QString::number(value, 'f', 0) + QStringLiteral(" 毫秒");
+    return value >= 1000 ? T("%1 秒").arg(QString::number(value / 1000, 'f', 1))
+                         : T("%1 毫秒").arg(QString::number(value, 'f', 0));
 }
 QString size(double bytes) {
     if (bytes >= GiB) return QString::number(bytes / GiB, 'f', 1) + QStringLiteral(" GB");
     if (bytes >= MiB) return QString::number(bytes / MiB, 'f', 0) + QStringLiteral(" MB");
     return QString::number(bytes / 1024, 'f', 0) + QStringLiteral(" KB");
 }
-QString cores(double oneCorePercent) { return QString::number(oneCorePercent / 100, 'f', 1) + QStringLiteral(" 核"); }
+QString cores(double oneCorePercent) { return T("%1 核").arg(QString::number(oneCorePercent / 100, 'f', 1)); }
 
 bool isDisplayStack(const QString &name) {
     return name == "Xorg" || name == "Xwayland" || name.startsWith("ukui-kwin") || name.startsWith("kwin_") ||
@@ -130,9 +131,9 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     };
 
     if (atLeast(oom, 1)) {
-        add("oom", true, QStringLiteral("系统内存耗尽，已有进程被内核结束"),
-            {QStringLiteral("本次采样内 OOM 终止 %1 次").arg(*oom, 0, 'f', 0)},
-            QStringLiteral("保存工作，关闭不用的大程序。被结束的进程可用 journalctl -k | grep -i oom 查看。"), "relief", true);
+        add("oom", true, T("系统内存耗尽，已有进程被内核结束"),
+            {T("本次采样内 OOM 终止 %1 次").arg(*oom, 0, 'f', 0)},
+            T("保存工作，关闭不用的大程序。被结束的进程可用 journalctl -k | grep -i oom 查看。"), "relief", true);
     }
 
     // Memory. Used swap or a large cache alone is not a problem; ongoing reclaim is.
@@ -145,14 +146,14 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
         const bool severe = (availableFraction && *availableFraction <= .03 && (activeSwap || directReclaim)) ||
             atLeast(memoryFull, 10) || atLeast(memorySome, 30) || atLeast(allocStalls, 50);
         QStringList evidence;
-        if (available && availableFraction) evidence << QStringLiteral("可用 %1（%2）").arg(size(*available), percent(*availableFraction));
-        if (activeSwap) evidence << QStringLiteral("换入 %1/s，换出 %2/s").arg(size(swapIn.value_or(0)), size(swapOut.value_or(0)));
-        if (directReclaim) evidence << QStringLiteral("直接回收 %1 次/s").arg(allocStalls.value_or(0), 0, 'f', 0);
-        if (memorySome || memoryFull) evidence << QStringLiteral("内存停顿 %1%").arg(memorySome.value_or(memoryFull.value_or(0)), 0, 'f', 1);
+        if (available && availableFraction) evidence << T("可用 %1（%2）").arg(size(*available), percent(*availableFraction));
+        if (activeSwap) evidence << T("换入 %1/s，换出 %2/s").arg(size(swapIn.value_or(0)), size(swapOut.value_or(0)));
+        if (directReclaim) evidence << T("直接回收 %1 次/s").arg(allocStalls.value_or(0), 0, 'f', 0);
+        if (memorySome || memoryFull) evidence << T("内存停顿 %1%").arg(memorySome.value_or(memoryFull.value_or(0)), 0, 'f', 1);
         const auto &top = survey();
-        add("memory", severe, lowMemory ? QStringLiteral("内存不足，系统正在回收内存") : QStringLiteral("内存回收造成停顿"), evidence,
-            top.memory > 0 ? QStringLiteral("占用最多的是 %1（%2）。保存工作后关闭它或其他不用的程序。").arg(top.memoryName, size(top.memory))
-                           : QStringLiteral("保存工作后关闭不用的程序。"), "relief");
+        add("memory", severe, lowMemory ? T("内存不足，系统正在回收内存") : T("内存回收造成停顿"), evidence,
+            top.memory > 0 ? T("占用最多的是 %1（%2）。保存工作后关闭它或其他不用的程序。").arg(top.memoryName, size(top.memory))
+                           : T("保存工作后关闭不用的程序。"), "relief");
     }
 
     // Disk. Device wait time is the direct symptom; PSI and iowait corroborate it.
@@ -162,15 +163,15 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     if (slowDisk || ioStall || ioWaiting) {
         const bool severe = atLeast(diskWait, 300) || atLeast(ioFull, 20) || atLeast(ioSome, 50);
         QStringList evidence;
-        if (diskBusy) evidence << QStringLiteral("%1 繁忙 %2").arg(disk["busiestDevice"].toString(), percent(*diskBusy));
-        if (diskWait) evidence << QStringLiteral("平均等待 %1").arg(milliseconds(*diskWait));
+        if (diskBusy) evidence << T("%1 繁忙 %2").arg(disk["busiestDevice"].toString(), percent(*diskBusy));
+        if (diskWait) evidence << T("平均等待 %1").arg(milliseconds(*diskWait));
         if (iowait) evidence << QStringLiteral("iowait %1").arg(percent(*iowait));
-        if (ioSome) evidence << QStringLiteral("I/O 停顿 %1%").arg(*ioSome, 0, 'f', 1);
+        if (ioSome) evidence << T("I/O 停顿 %1%").arg(*ioSome, 0, 'f', 1);
         const auto &top = survey();
-        if (!top.blocked.isEmpty()) evidence << QStringLiteral("等待磁盘的进程：%1").arg(top.blocked.join(QStringLiteral("、")));
-        add("io", severe, QStringLiteral("磁盘繁忙，读写响应变慢"), evidence,
-            top.io > 0 ? QStringLiteral("读写最多的是 %1（%2/s）。大文件复制、更新或扫描可错开进行。").arg(top.ioName, size(top.io))
-                       : QStringLiteral("大文件复制、系统更新或安全扫描可错开进行。"), "suspect");
+        if (!top.blocked.isEmpty()) evidence << T("等待磁盘的进程：%1").arg(top.blocked.join(T("、")));
+        add("io", severe, T("磁盘繁忙，读写响应变慢"), evidence,
+            top.io > 0 ? T("读写最多的是 %1（%2/s）。大文件复制、更新或扫描可错开进行。").arg(top.ioName, size(top.io))
+                       : T("大文件复制、系统更新或安全扫描可错开进行。"), "suspect");
     }
 
     // CPU.
@@ -183,14 +184,14 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
         const bool severe = atLeast(usage, .95) && (atLeast(loadPerCore, 1.5) || atLeast(cpuSome, 30) || atLeast(queueWait, 1.5));
         QStringList evidence;
         if (usage) evidence << QStringLiteral("CPU %1").arg(percent(*usage));
-        if (load1 && coreCount) evidence << QStringLiteral("负载 %1 / %2 核").arg(*load1, 0, 'f', 1).arg(*coreCount, 0, 'f', 0);
-        if (queueWait) evidence << QStringLiteral("排队 %1").arg(*queueWait, 0, 'f', 2);
-        if (cpuSome) evidence << QStringLiteral("CPU 停顿 %1%").arg(*cpuSome, 0, 'f', 1);
+        if (load1 && coreCount) evidence << T("负载 %1 / %2 核").arg(*load1, 0, 'f', 1).arg(*coreCount, 0, 'f', 0);
+        if (queueWait) evidence << T("排队 %1").arg(*queueWait, 0, 'f', 2);
+        if (cpuSome) evidence << T("CPU 停顿 %1%").arg(*cpuSome, 0, 'f', 1);
         const auto &top = survey();
         const bool named = top.cpu >= 50;
-        const QString scope = top.cpuChildren >= top.cpu / 2 ? QStringLiteral("，含它启动的短暂子进程") : QString();
-        add("cpu", severe, named ? QStringLiteral("CPU 繁忙，占用最高的是 %1（%2%3）").arg(top.cpuName, cores(top.cpu), scope) : QStringLiteral("CPU 繁忙，任务正在排队"),
-            evidence, QStringLiteral("确认不需要后可结束下方的进程；经常出现的话可以加入自动查杀。"), "suspect");
+        const QString scope = top.cpuChildren >= top.cpu / 2 ? T("，含它启动的短暂子进程") : QString();
+        add("cpu", severe, named ? T("CPU 繁忙，占用最高的是 %1（%2%3）").arg(top.cpuName, cores(top.cpu), scope) : T("CPU 繁忙，任务正在排队"),
+            evidence, T("确认不需要后可结束下方的进程；经常出现的话可以加入自动查杀。"), "suspect");
     }
 
     // A single pegged thread leaves a many-core machine responsive overall, so it
@@ -199,9 +200,9 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
         const auto &top = survey();
         if (top.own >= 95) {
             QJsonObject hint{{"kind", "singleCore"}, {"severity", "info"},
-                {"title", QStringLiteral("%1 占满了约 %2").arg(top.ownName, cores(top.own))},
-                {"evidence", QStringLiteral("整机 CPU %1").arg(usage ? percent(*usage) : QStringLiteral("—"))},
-                {"suggestion", QStringLiteral("该程序本身可能无响应，其他程序一般不受影响。")}, {"action", "suspect"}, {"immediate", false}};
+                {"title", T("%1 占满了约 %2").arg(top.ownName, cores(top.own))},
+                {"evidence", T("整机 CPU %1").arg(usage ? percent(*usage) : QStringLiteral("—"))},
+                {"suggestion", T("该程序本身可能无响应，其他程序一般不受影响。")}, {"action", "suspect"}, {"immediate", false}};
             findings.append({int(Priority.indexOf("singleCore")), hint});
         }
     }
@@ -211,17 +212,17 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     const bool slowedUnderLoad = atLeast(usage, .7) && frequency && *frequency <= .6;
     if (hot || slowedUnderLoad) {
         QStringList evidence;
-        if (hottest) evidence << QStringLiteral("最高 %1 °C（%2）").arg(*hottest, 0, 'f', 0).arg(thermal["hottestZone"].toString());
-        if (frequency) evidence << QStringLiteral("CPU 频率为最高的 %1").arg(percent(*frequency));
+        if (hottest) evidence << T("最高 %1 °C（%2）").arg(*hottest, 0, 'f', 0).arg(thermal["hottestZone"].toString());
+        if (frequency) evidence << T("CPU 频率为最高的 %1").arg(percent(*frequency));
         if (usage) evidence << QStringLiteral("CPU %1").arg(percent(*usage));
-        add("thermal", atLeast(hottest, 100), hot ? QStringLiteral("CPU 温度过高，可能降频") : QStringLiteral("高负载下 CPU 频率偏低"), evidence,
-            thermal["limited"].toBool() ? QStringLiteral("当前频率上限被限制。检查电源模式是否为节能，并清理散热口。")
-                                        : QStringLiteral("检查散热口和电源模式；接通电源通常能恢复频率。"));
+        add("thermal", atLeast(hottest, 100), hot ? T("CPU 温度过高，可能降频") : T("高负载下 CPU 频率偏低"), evidence,
+            thermal["limited"].toBool() ? T("当前频率上限被限制。检查电源模式是否为节能，并清理散热口。")
+                                        : T("检查散热口和电源模式；接通电源通常能恢复频率。"));
     }
 
     if (atLeast(irq, .25)) {
-        add("interrupt", atLeast(irq, .5), QStringLiteral("中断处理占用过高"), {QStringLiteral("硬中断和软中断占 %1").arg(percent(*irq))},
-            QStringLiteral("常见于大流量网络或异常设备。可暂时断开外设或网络后对比。"));
+        add("interrupt", atLeast(irq, .5), T("中断处理占用过高"), {T("硬中断和软中断占 %1").arg(percent(*irq))},
+            T("常见于大流量网络或异常设备。可暂时断开外设或网络后对比。"));
     }
 
     // CPU that no surviving process accounts for points at many short-lived processes.
@@ -234,41 +235,41 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     const int sourceChildren = source["newChildren"].toInt(0);
     const double unattributed = usage && coreCount && attributed ? *usage * *coreCount * 100 - *attributed : 0;
     if ((atLeast(forks, 100) && unattributed >= 100) || (atLeast(forks, 50) && sourceCpu >= 50)) {
-        QStringList evidence{QStringLiteral("每秒新建 %1 个进程").arg(*forks, 0, 'f', 0)};
-        if (unattributed >= 50) evidence << QStringLiteral("约 %1的 CPU 没有归属到存活进程").arg(cores(unattributed));
-        QString advice = QStringLiteral("通常来自循环调用命令的脚本。检查定时任务或构建脚本。");
+        QStringList evidence{T("每秒新建 %1 个进程").arg(*forks, 0, 'f', 0)};
+        if (unattributed >= 50) evidence << T("约 %1的 CPU 没有归属到存活进程").arg(cores(unattributed));
+        QString advice = T("通常来自循环调用命令的脚本。检查定时任务或构建脚本。");
         if (sourceCpu >= 10 || sourceChildren >= 5) {
-            const QString who = QStringLiteral("%1（PID %2%3）").arg(source["name"].toString(), QString::number(source["pid"].toDouble(), 'f', 0),
-                source["own"].toBool() ? QString() : QStringLiteral("，") + source["owner"].toString());
+            const QString who = T("%1（PID %2%3）").arg(source["name"].toString(), QString::number(source["pid"].toDouble(), 'f', 0),
+                source["own"].toBool() ? QString() : T("，") + source["owner"].toString());
             QStringList facts;
-            if (sourceCpu >= 10) facts << QStringLiteral("它启动的短暂子进程用了约 %1").arg(cores(sourceCpu));
-            if (sourceChildren >= 5) facts << QStringLiteral("两次扫描间新出现 %1 个子进程").arg(sourceChildren);
-            evidence << QStringLiteral("主要来自 %1：%2").arg(who, facts.join(QStringLiteral("，")));
+            if (sourceCpu >= 10) facts << T("它启动的短暂子进程用了约 %1").arg(cores(sourceCpu));
+            if (sourceChildren >= 5) facts << T("两次扫描间新出现 %1 个子进程").arg(sourceChildren);
+            evidence << T("主要来自 %1：%2").arg(who, facts.join(T("，")));
             advice = source["own"].toBool()
-                ? QStringLiteral("%1 在反复启动命令。确认它在做什么；不需要的话可以结束它，或加入自动查杀。").arg(source["name"].toString())
-                : QStringLiteral("%1 属于 %2，在反复启动命令；只能由管理员处理，常见于安全软件或系统服务的定时检查。").arg(source["name"].toString(), source["owner"].toString());
+                ? T("%1 在反复启动命令。确认它在做什么；不需要的话可以结束它，或加入自动查杀。").arg(source["name"].toString())
+                : T("%1 属于 %2，在反复启动命令；只能由管理员处理，常见于安全软件或系统服务的定时检查。").arg(source["name"].toString(), source["owner"].toString());
         }
-        add("forks", false, QStringLiteral("短命进程过多"), evidence, advice, "suspect");
+        add("forks", false, T("短命进程过多"), evidence, advice, "suspect");
     }
 
     if (snapshot["processesFresh"].toBool()) {
         const auto &top = survey();
         if (top.display >= 70) {
-            add("compositor", top.display >= 150, QStringLiteral("桌面显示服务占用偏高：%1").arg(top.displayName), {QStringLiteral("占用 %1").arg(cores(top.display))},
-                QStringLiteral("关闭窗口特效或减少高刷新内容（视频、动画）后观察。"));
+            add("compositor", top.display >= 150, T("桌面显示服务占用偏高：%1").arg(top.displayName), {T("占用 %1").arg(cores(top.display))},
+                T("关闭窗口特效或减少高刷新内容（视频、动画）后观察。"));
         }
     }
 
     // Direct measurements of a stall.
     if (atLeast(displayMax, 500)) {
-        add("display", atLeast(displayMax, 2000), QStringLiteral("桌面显示响应变慢"), {QStringLiteral("显示服务往返 %1（正常低于 20 毫秒）").arg(milliseconds(*displayMax))},
-            QStringLiteral("CPU 不高时多与显卡驱动或窗口合成有关，可关闭窗口特效后对比。"), "none", atLeast(displayMax, 3000));
+        add("display", atLeast(displayMax, 2000), T("桌面显示响应变慢"), {T("显示服务往返 %1（正常低于 20 毫秒）").arg(milliseconds(*displayMax))},
+            T("CPU 不高时多与显卡驱动或窗口合成有关，可关闭窗口特效后对比。"), "none", atLeast(displayMax, 3000));
     }
     if (atLeast(schedulerMax, 300)) {
         const bool frozen = *schedulerMax >= 1000;
-        add("responsiveness", frozen, frozen ? QStringLiteral("系统出现短暂冻结") : QStringLiteral("程序调度明显延迟"),
-            {QStringLiteral("线程被延迟 %1（正常低于 10 毫秒）").arg(milliseconds(*schedulerMax))},
-            QStringLiteral("此时的进程排行最值得查看。"), "suspect", frozen);
+        add("responsiveness", frozen, frozen ? T("系统出现短暂冻结") : T("程序调度明显延迟"),
+            {T("线程被延迟 %1（正常低于 10 毫秒）").arg(milliseconds(*schedulerMax))},
+            T("此时的进程排行最值得查看。"), "suspect", frozen);
     }
 
     // Capacity is not a stall by itself, but a nearly full disk causes its own failures.
@@ -279,9 +280,9 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
         if (!fraction || !free) continue;
         diskKnown = true;
         if (*fraction < .95 || *free > 2 * GiB) continue;
-        add("disk", *fraction >= .99 && *free <= .5 * GiB, QStringLiteral("磁盘空间不足：%1").arg(volume["mountPoint"].toString()),
-            {QStringLiteral("已用 %1，剩余 %2").arg(percent(*fraction), size(*free))},
-            QStringLiteral("清理大文件或构建产物。"));
+        add("disk", *fraction >= .99 && *free <= .5 * GiB, T("磁盘空间不足：%1").arg(volume["mountPoint"].toString()),
+            {T("已用 %1，剩余 %2").arg(percent(*fraction), size(*free))},
+            T("清理大文件或构建产物。"));
     }
 
     std::stable_sort(findings.begin(), findings.end(), [](const Finding &a, const Finding &b) {
@@ -296,18 +297,18 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     }
 
     QJsonArray coverage;
-    if (!psiAvailable) coverage.append(QStringLiteral("此内核没有 PSI（/proc/pressure），改用调度排队、内存回收和磁盘等待时间判断。"));
-    if (!queueWait) coverage.append(QStringLiteral("调度排队时间不可用（/proc/schedstat）。"));
-    if (!schedulerMax) coverage.append(QStringLiteral("线程调度延迟尚无数据。"));
-    if (!probe["displayAvailable"].toBool()) coverage.append(QStringLiteral("未连接到 X 显示服务，无法测量显示响应。"));
-    if (!hottest && !frequency) coverage.append(QStringLiteral("此设备未提供温度或频率读数。"));
-    if (!diskBusy) coverage.append(QStringLiteral("磁盘繁忙度和等待时间尚无数据。"));
-    if (!diskKnown) coverage.append(QStringLiteral("未读取到文件系统容量。"));
-    coverage.append(QStringLiteral("其他用户和系统进程只能看到 CPU 与内存，不能结束；当前用户的进程才能操作。"));
+    if (!psiAvailable) coverage.append(T("此内核没有 PSI（/proc/pressure），改用调度排队、内存回收和磁盘等待时间判断。"));
+    if (!queueWait) coverage.append(T("调度排队时间不可用（/proc/schedstat）。"));
+    if (!schedulerMax) coverage.append(T("线程调度延迟尚无数据。"));
+    if (!probe["displayAvailable"].toBool()) coverage.append(T("未连接到 X 显示服务，无法测量显示响应。"));
+    if (!hottest && !frequency) coverage.append(T("此设备未提供温度或频率读数。"));
+    if (!diskBusy) coverage.append(T("磁盘繁忙度和等待时间尚无数据。"));
+    if (!diskKnown) coverage.append(T("未读取到文件系统容量。"));
+    coverage.append(T("其他用户和系统进程只能看到 CPU 与内存，不能结束；当前用户的进程才能操作。"));
     // Read from the sampler's own figure: healthy snapshots must not walk the process list.
     const Number selfCpu = metric(snapshot["selfCpuPercent"]);
-    if (atLeast(selfCpu, 30)) coverage.append(QStringLiteral("DevStats 自身此刻占用 %1（打开窗口或一键诊断时会短暂升高），已排除在可疑程序之外。").arg(cores(*selfCpu)));
-    coverage.append(QStringLiteral("GPU 负载、应用内部的锁等待和网络延迟无法直接测量。"));
+    if (atLeast(selfCpu, 30)) coverage.append(T("DevStats 自身此刻占用 %1（打开窗口或一键诊断时会短暂升高），已排除在可疑程序之外。").arg(cores(*selfCpu)));
+    coverage.append(T("GPU 负载、应用内部的锁等待和网络延迟无法直接测量。"));
 
     const bool known = usage && availableFraction;
     const QString state = critical ? QStringLiteral("critical") : problems ? QStringLiteral("attention")
@@ -317,14 +318,14 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
         const auto first = findings.first().json;
         headline = first["title"].toString();
         summary = first["evidence"].toString();
-        if (problems > 1) summary += QStringLiteral("。另有 %1 项相关线索。").arg(problems - 1);
+        if (problems > 1) summary += T("。另有 %1 项相关线索。").arg(problems - 1);
     } else if (known) {
-        headline = QStringLiteral("系统运行流畅");
-        summary = QStringLiteral("CPU %1，可用内存 %2").arg(percent(*usage), size(*available));
-        if (schedulerMax) summary += QStringLiteral("，调度延迟 %1").arg(milliseconds(*schedulerMax));
+        headline = T("系统运行流畅");
+        summary = T("CPU %1，可用内存 %2").arg(percent(*usage), size(*available));
+        if (schedulerMax) summary += T("，调度延迟 %1").arg(milliseconds(*schedulerMax));
     } else {
-        headline = QStringLiteral("正在收集数据");
-        summary = QStringLiteral("首次采样后约 2 秒给出结果。");
+        headline = T("正在收集数据");
+        summary = T("首次采样后约 2 秒给出结果。");
     }
 
     auto severityOf = [&](const QStringList &kinds) {
@@ -343,24 +344,24 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     };
     const QString none = QString::fromUtf8("—");
     const QString cpuDetail = load1 && coreCount
-        ? QStringLiteral("负载 %1 / %2 核").arg(*load1, 0, 'f', 1).arg(*coreCount, 0, 'f', 0) + (queueWait ? QStringLiteral(" · 排队 %1").arg(*queueWait, 0, 'f', 1) : QString())
-        : QStringLiteral("等待采样");
+        ? T("负载 %1 / %2 核").arg(*load1, 0, 'f', 1).arg(*coreCount, 0, 'f', 0) + (queueWait ? T(" · 排队 %1").arg(*queueWait, 0, 'f', 1) : QString())
+        : T("等待采样");
     const QString memoryDetail = available
-        ? QStringLiteral("可用 %1 · 换页 %2/s").arg(size(*available), size(swapIn.value_or(0) + swapOut.value_or(0))) : QStringLiteral("等待采样");
+        ? T("可用 %1 · 换页 %2/s").arg(size(*available), size(swapIn.value_or(0) + swapOut.value_or(0))) : T("等待采样");
     const QString diskDetail = diskBusy
-        ? QStringLiteral("%1 · 等待 %2").arg(disk["busiestDevice"].toString(), diskWait ? milliseconds(*diskWait) : none) + (iowait ? QStringLiteral(" · iowait %1").arg(percent(*iowait)) : QString())
-        : QStringLiteral("等待采样");
-    const QString responseDetail = displayMax ? QStringLiteral("显示服务 %1").arg(milliseconds(*displayMax)) : QStringLiteral("显示服务不可测");
-    const QString thermalDetail = frequency ? QStringLiteral("频率为最高的 %1").arg(percent(*frequency)) : QStringLiteral("频率不可读");
+        ? T("%1 · 等待 %2").arg(disk["busiestDevice"].toString(), diskWait ? milliseconds(*diskWait) : none) + (iowait ? QStringLiteral(" · iowait %1").arg(percent(*iowait)) : QString())
+        : T("等待采样");
+    const QString responseDetail = displayMax ? T("显示服务 %1").arg(milliseconds(*displayMax)) : T("显示服务不可测");
+    const QString thermalDetail = frequency ? T("频率为最高的 %1").arg(percent(*frequency)) : T("频率不可读");
     const auto runningNow = states["running"], zombies = states["zombie"];
     const QJsonArray meters{
-        meter("cpu", QStringLiteral("处理器"), usage ? percent(*usage) : none, cpuDetail, !usage ? QStringLiteral("neutral") : severityOf({"cpu", "interrupt", "forks"}), usage),
-        meter("memory", QStringLiteral("内存"), metric(memory, "fraction", 1) ? percent(*metric(memory, "fraction", 1)) : none, memoryDetail, !available ? QStringLiteral("neutral") : severityOf({"memory", "oom"}), metric(memory, "fraction", 1)),
-        meter("disk", QStringLiteral("磁盘繁忙"), diskBusy ? percent(*diskBusy) : none, diskDetail, !diskBusy ? QStringLiteral("neutral") : severityOf({"io"}), diskBusy),
-        meter("response", QStringLiteral("响应延迟"), schedulerMax ? milliseconds(*schedulerMax) : none, responseDetail, !schedulerMax ? QStringLiteral("neutral") : severityOf({"responsiveness", "display", "compositor"}), schedulerMax ? Number(*schedulerMax / 1000) : Number()),
-        meter("thermal", QStringLiteral("温度"), hottest ? QString::number(*hottest, 'f', 0) + QStringLiteral(" °C") : none, thermalDetail, !hottest && !frequency ? QStringLiteral("neutral") : severityOf({"thermal"}), hottest ? Number(*hottest / 100) : Number()),
-        meter("blocked", QStringLiteral("等待磁盘的进程"), blocked ? QString::number(*blocked, 'f', 0) : none,
-              QStringLiteral("运行 %1 · 僵尸 %2").arg(runningNow.isDouble() ? QString::number(runningNow.toInt()) : none, zombies.isDouble() ? QString::number(zombies.toInt()) : none),
+        meter("cpu", T("处理器"), usage ? percent(*usage) : none, cpuDetail, !usage ? QStringLiteral("neutral") : severityOf({"cpu", "interrupt", "forks"}), usage),
+        meter("memory", T("内存"), metric(memory, "fraction", 1) ? percent(*metric(memory, "fraction", 1)) : none, memoryDetail, !available ? QStringLiteral("neutral") : severityOf({"memory", "oom"}), metric(memory, "fraction", 1)),
+        meter("disk", T("磁盘繁忙"), diskBusy ? percent(*diskBusy) : none, diskDetail, !diskBusy ? QStringLiteral("neutral") : severityOf({"io"}), diskBusy),
+        meter("response", T("响应延迟"), schedulerMax ? milliseconds(*schedulerMax) : none, responseDetail, !schedulerMax ? QStringLiteral("neutral") : severityOf({"responsiveness", "display", "compositor"}), schedulerMax ? Number(*schedulerMax / 1000) : Number()),
+        meter("thermal", T("温度"), hottest ? QString::number(*hottest, 'f', 0) + QStringLiteral(" °C") : none, thermalDetail, !hottest && !frequency ? QStringLiteral("neutral") : severityOf({"thermal"}), hottest ? Number(*hottest / 100) : Number()),
+        meter("blocked", T("等待磁盘的进程"), blocked ? QString::number(*blocked, 'f', 0) : none,
+              T("运行 %1 · 僵尸 %2").arg(runningNow.isDouble() ? QString::number(runningNow.toInt()) : none, zombies.isDouble() ? QString::number(zombies.toInt()) : none),
               !blocked ? QStringLiteral("neutral") : atLeast(blocked, 4) ? QStringLiteral("warn") : QStringLiteral("ok"), blocked ? Number(*blocked / 16) : Number())};
     return {{"state", state}, {"headline", headline}, {"summary", summary}, {"findings", findingList}, {"meters", meters}, {"coverage", coverage}};
 }
@@ -457,13 +458,13 @@ QJsonArray rankSuspects(const QJsonObject &snapshot, const QString &basis, int l
         QJsonArray members;
         for (int i = 0; i < shown; ++i) members.append(group.members[keyed[i].second]);
         QStringList reason;
-        if (group.blocked) reason << QStringLiteral("%1 个进程在等待磁盘").arg(group.blocked);
-        if (group.cpu >= 25) reason << QStringLiteral("约占全机 CPU 的 %1").arg(percent(std::min(1.0, group.cpu / (coreCount * 100))));
-        if (group.children >= 25) reason << QStringLiteral("其中短暂子进程约 %1").arg(cores(group.children));
-        if (group.born >= 5) reason << QStringLiteral("新启动 %1 个子进程").arg(group.born);
-        if (totalMemory > 0 && group.memory >= totalMemory * .1) reason << QStringLiteral("占内存 %1").arg(percent(group.memory / totalMemory));
-        if (group.growth >= 5 * MiB) reason << QStringLiteral("内存增长 %1/s").arg(size(group.growth));
-        if (group.io >= 5 * MiB) reason << QStringLiteral("读写 %1/s").arg(size(group.io));
+        if (group.blocked) reason << T("%1 个进程在等待磁盘").arg(group.blocked);
+        if (group.cpu >= 25) reason << T("约占全机 CPU 的 %1").arg(percent(std::min(1.0, group.cpu / (coreCount * 100))));
+        if (group.children >= 25) reason << T("其中短暂子进程约 %1").arg(cores(group.children));
+        if (group.born >= 5) reason << T("新启动 %1 个子进程").arg(group.born);
+        if (totalMemory > 0 && group.memory >= totalMemory * .1) reason << T("占内存 %1").arg(percent(group.memory / totalMemory));
+        if (group.growth >= 5 * MiB) reason << T("内存增长 %1/s").arg(size(group.growth));
+        if (group.io >= 5 * MiB) reason << T("读写 %1/s").arg(size(group.io));
         result.append(QJsonObject{{"key", group.key}, {"name", group.name}, {"owner", group.owner}, {"own", group.own}, {"kernelThread", group.kernel},
             {"processCount", group.count}, {"cpuPercent", group.cpuKnown ? QJsonValue(group.cpu) : QJsonValue(QJsonValue::Null)},
             {"memoryBytes", group.memory}, {"ioBytesPerSecond", group.ioKnown ? QJsonValue(group.io) : QJsonValue(QJsonValue::Null)},

@@ -1,4 +1,5 @@
 #include "relief_observation.h"
+#include "i18n.h"
 #include <QSet>
 #include <cmath>
 
@@ -63,6 +64,6 @@ QJsonObject DevStatsRelief::outcome(const QJsonObject &before,const QJsonObject 
     operation["beforeProcessSampleAgeSeconds"]=before.value("processSampleAgeSeconds");
     operation["missingProcessCount"]=missing;operation["unknownProcessCount"]=unknown;
     operation["processObservationFresh"]=fresh;
-    operation["measurementNote"]=QStringLiteral("可用内存变化同时受其他活动影响；RSS含共享页，进程离开可读列表或采样未知都不能当成精确释放量。");
+    operation["measurementNote"]=T("可用内存变化同时受其他活动影响；RSS含共享页，进程离开可读列表或采样未知都不能当成精确释放量。");
     return operation;
 }

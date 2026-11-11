@@ -1,4 +1,5 @@
 #include "diagnostic_run.h"
+#include "i18n.h"
 #include "diagnostics.h"
 #include <QVector>
 #include <algorithm>
@@ -9,7 +10,7 @@ constexpr qint64 Duration = 10000;
 constexpr int MaximumSuspects = 64;
 // Kinds listed in a run's status strip. Others still appear as findings.
 const QStringList CheckKinds = {"cpu", "memory", "io", "responsiveness", "display", "thermal"};
-const QStringList CheckTitles = {QStringLiteral("处理器"), QStringLiteral("内存"), QStringLiteral("磁盘"), QStringLiteral("调度"), QStringLiteral("显示"), QStringLiteral("温度")};
+QStringList checkTitles() { return {T("处理器"), T("内存"), T("磁盘"), T("调度"), T("显示"), T("温度")}; }
 bool measured(const QJsonValue &v, double maximum = 1e300) {
     return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble() >= 0 && v.toDouble() <= maximum;
 }
@@ -44,7 +45,7 @@ bool DiagnosticRun::observe(const QJsonObject &snapshot, qint64 monotonicMillise
     if (samples_ < 6 && (lastObservation_ < 0 || elapsed_ - lastObservation_ >= 1500)) {
         if (lastObservation_ >= 0 && elapsed_ - lastObservation_ > 3000) {
             for (auto it = findings_.begin(); it != findings_.end(); ++it) { it->consecutive = 0; it->consecutiveAt = -1; }
-            const QString gap = QStringLiteral("采样线程自身被延迟超过 3 秒：这段时间系统很可能卡住了，但没有留下数据。");
+            const QString gap = T("采样线程自身被延迟超过 3 秒：这段时间系统很可能卡住了，但没有留下数据。");
             if (!coverage_.contains(gap)) coverage_.append(gap);
         }
         lastObservation_ = elapsed_; ++samples_;
@@ -154,12 +155,12 @@ QJsonObject DiagnosticRun::result() const {
     for (const auto &finding : ordered) findings.append(finding);
     for (int i = 0; i < CheckKinds.size(); ++i) {
         const auto c = checks_.value(CheckKinds[i]);
-        checks.append(QJsonObject{{"kind", CheckKinds[i]}, {"title", CheckTitles[i]},
+        checks.append(QJsonObject{{"kind", CheckKinds[i]}, {"title", checkTitles()[i]},
             {"status", c.pressure ? "pressure" : c.known ? "ok" : "unknown"},
             {"observedSamples", c.pressure}, {"knownSamples", c.known}, {"unknownSamples", c.unknown}});
     }
     for (const auto &text : coverage_) coverage.append(text);
-    coverage.append(QStringLiteral("这是约 10 秒的观察，间歇性卡顿请在卡顿发生时重新诊断，或查看卡顿记录。"));
+    coverage.append(T("这是约 10 秒的观察，间歇性卡顿请在卡顿发生时重新诊断，或查看卡顿记录。"));
 
     const QString basis = rankingBasis();
     QVector<QString> keys = suspects_.keys().toVector();
@@ -187,21 +188,21 @@ QJsonObject DiagnosticRun::result() const {
 
     QString headline, summary;
     if (state_ == "idle") {
-        headline = QStringLiteral("一键诊断");
-        summary = QStringLiteral("观察约 10 秒，找出卡顿原因和相关进程。");
+        headline = T("一键诊断");
+        summary = T("观察约 10 秒，找出卡顿原因和相关进程。");
     } else if (state_ == "running") {
-        headline = QStringLiteral("正在观察系统…");
-        summary = QStringLiteral("不会关闭任何程序。卡顿正在发生时诊断最准确。");
+        headline = T("正在观察系统…");
+        summary = T("不会关闭任何程序。卡顿正在发生时诊断最准确。");
     } else if (ordered.isEmpty() || severityRank(ordered.first()) == 2) {
-        headline = QStringLiteral("本轮未发现明显压力");
-        summary = QStringLiteral("如果刚才感到卡顿，可以在卡顿发生时再诊断一次，或查看卡顿记录。");
+        headline = T("本轮未发现明显压力");
+        summary = T("如果刚才感到卡顿，可以在卡顿发生时再诊断一次，或查看卡顿记录。");
     } else {
-        headline = sustained ? ordered.first().value("title").toString() : QStringLiteral("只有短暂压力：") + ordered.first().value("title").toString();
-        summary = sustained ? QStringLiteral("发现 %1 项持续问题%2。").arg(sustained).arg(transient ? QStringLiteral("、%1 项短暂线索").arg(transient) : QString())
-                            : QStringLiteral("压力没有持续，可能已经过去。");
+        headline = sustained ? ordered.first().value("title").toString() : T("只有短暂压力：%1").arg(ordered.first().value("title").toString());
+        summary = sustained ? T("发现 %1 项持续问题%2。").arg(sustained).arg(transient ? T("、%1 项短暂线索").arg(transient) : QString())
+                            : T("压力没有持续，可能已经过去。");
     }
-    if (state_ == "cancelled") headline = QStringLiteral("已取消诊断");
-    if (state_ == "interrupted") headline = QStringLiteral("诊断被中断");
+    if (state_ == "cancelled") headline = T("已取消诊断");
+    if (state_ == "interrupted") headline = T("诊断被中断");
     return {{"state", state_}, {"progress", state_ == "completed" ? 100 : qBound(0, int(qMin(elapsed_, Duration) * 100 / Duration), 100)},
         {"elapsedSeconds", elapsed_ / 1000.}, {"durationSeconds", 10}, {"sampleCount", samples_},
         {"startedAt", started_ >= 0 ? QJsonValue(startedAt_) : QJsonValue(QJsonValue::Null)},

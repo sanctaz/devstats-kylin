@@ -1,4 +1,6 @@
 #include "monitor_window.h"
+#include "devstats_version.h"
+#include "i18n.h"
 #include "charts.h"
 #include "diagnostics_panel.h"
 #include "history_feed.h"
@@ -57,12 +59,16 @@ constexpr int BadgeToneRole = Qt::UserRole + 2;
 constexpr int ProcessRole = Qt::UserRole + 1;
 
 const QStringList Modules = {"overview", "cpu", "memory", "disk", "network", "battery", "diagnostics", "automation", "projects"};
-const QStringList Titles = {QStringLiteral("总览"), QStringLiteral("处理器"), QStringLiteral("内存"), QStringLiteral("磁盘"),
-    QStringLiteral("网络"), QStringLiteral("电池"), QStringLiteral("卡顿诊断"), QStringLiteral("自动查杀"), QStringLiteral("开发项目")};
-const QStringList Subtitles = {QStringLiteral("系统状态、最忙的进程和最近的卡顿"), QStringLiteral("使用率、核心负载和占用最高的进程"),
-    QStringLiteral("物理内存、缓存和占用最高的进程"), QStringLiteral("读写速率、设备繁忙度和卷容量"), QStringLiteral("上传、下载和按应用排行"),
-    QStringLiteral("电源状态和应用耗电影响"), QStringLiteral("找出卡顿的原因和相关进程"), QStringLiteral("进程运行或超过 CPU 阈值时自动结束"),
-    QStringLiteral("按项目归组查看进程")};
+// Looked up when shown, so they follow the language in use; one entry per module, in order.
+QStringList titles() {
+    return {T("总览"), T("处理器"), T("内存"), T("磁盘"), T("网络"), T("电池"), T("卡顿诊断"), T("自动查杀"), T("开发项目")};
+}
+QStringList subtitles() {
+    return {T("系统状态、最忙的进程和最近的卡顿"), T("使用率、核心负载和占用最高的进程"),
+        T("物理内存、缓存和占用最高的进程"), T("读写速率、设备繁忙度和卷容量"), T("上传、下载和按应用排行"),
+        T("电源状态和应用耗电影响"), T("找出卡顿的原因和相关进程"), T("进程运行或超过 CPU 阈值时自动结束"),
+        T("按项目归组查看进程")};
+}
 // Pages without a history chart do not show the time range selector.
 const QSet<QString> HistoryModules = {"overview", "cpu", "memory", "disk", "network", "battery", "diagnostics"};
 
@@ -75,19 +81,19 @@ QString number(const QJsonValue &value, int decimals = 0) { return value.isDoubl
 QString duration(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0) return unavailable();
     const qint64 value = qint64(seconds);
-    if (value >= 86400) return QStringLiteral("%1 天 %2 小时").arg(value / 86400).arg(value / 3600 % 24);
-    if (value >= 3600) return QStringLiteral("%1 小时 %2 分").arg(value / 3600).arg(value / 60 % 60);
-    if (value >= 60) return QStringLiteral("%1 分 %2 秒").arg(value / 60).arg(value % 60);
-    return QStringLiteral("%1 秒").arg(value);
+    if (value >= 86400) return T("%1 天 %2 小时").arg(value / 86400).arg(value / 3600 % 24);
+    if (value >= 3600) return T("%1 小时 %2 分").arg(value / 3600).arg(value / 60 % 60);
+    if (value >= 60) return T("%1 分 %2 秒").arg(value / 60).arg(value % 60);
+    return T("%1 秒").arg(value);
 }
 QString batteryState(const QJsonObject &battery) {
-    if (battery.value("isPresent").isBool() && !battery.value("isPresent").toBool()) return QStringLiteral("未检测到电池");
+    if (battery.value("isPresent").isBool() && !battery.value("isPresent").toBool()) return T("未检测到电池");
     const QString state = battery.value("state").toString();
-    if (state == "charging") return QStringLiteral("正在充电");
-    if (state == "discharging") return QStringLiteral("使用电池");
-    if (state == "full") return QStringLiteral("电量已充满");
-    if (state == "pluggedIn") return QStringLiteral("已接通电源");
-    return QStringLiteral("状态暂不可用");
+    if (state == "charging") return T("正在充电");
+    if (state == "discharging") return T("使用电池");
+    if (state == "full") return T("电量已充满");
+    if (state == "pluggedIn") return T("已接通电源");
+    return T("状态暂不可用");
 }
 QString jsonStrings(const QJsonArray &array) {
     QStringList values;
@@ -146,8 +152,8 @@ QIcon quickIcon(const QString &kind, const QPalette &palette, const QColor &over
 
 class BatteryIndicator final : public QWidget {
 public:
-    BatteryIndicator() { setFixedSize(82, 44); setAccessibleName("电源状态"); }
-    void setState(double level, const QString &state) { level_ = level; state_ = state; setAccessibleName("电池 " + formatPercent(level)); update(); }
+    BatteryIndicator() { setFixedSize(82, 44); setAccessibleName(T("电源状态")); }
+    void setState(double level, const QString &state) { level_ = level; state_ = state; setAccessibleName(T("电池 %1").arg(formatPercent(level))); update(); }
 protected:
     void paintEvent(QPaintEvent *) override {
         const auto c = DevStatsUI::colors(window()->palette()); QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
@@ -255,7 +261,7 @@ struct MonitorWindow::Impl {
     bool networkObserving = false;
     bool suspectRanking = false;
     bool autoStart = false, visible = false;
-    int trayTheme = 0, appearance = 1;
+    int trayTheme = 0, appearance = 1, language = 0;
     bool largeTrayText = true, automationNotifications = true;
     QStringList manualProjects, customApps;
 
@@ -287,7 +293,7 @@ struct MonitorWindow::Impl {
         return widget;
     }
     QTreeWidget *processTable(const QString &key, int height,
-                              const QStringList &columns = {QStringLiteral("进程"), QStringLiteral("用户"), "PID", "CPU", QStringLiteral("内存")}) {
+                              const QStringList &columns = {T("进程"), T("用户"), "PID", "CPU", T("内存")}) {
         auto *tree = DevStatsUI::table(key, columns);
         tree->setMinimumHeight(height);
         tree->headerItem()->setTextAlignment(1, Qt::AlignLeft | Qt::AlignVCenter);
@@ -303,12 +309,12 @@ struct MonitorWindow::Impl {
         if (process.isEmpty()) return;
         QMenu menu(tree);
         const bool own = !process.value("executablePath").toString().isEmpty();
-        auto *terminate = menu.addAction(QStringLiteral("结束进程…"));
-        auto *kill = menu.addAction(QStringLiteral("强制结束…"));
+        auto *terminate = menu.addAction(T("结束进程…"));
+        auto *kill = menu.addAction(T("强制结束…"));
         menu.addSeparator();
-        auto *rule = menu.addAction(QStringLiteral("加入自动查杀…"));
+        auto *rule = menu.addAction(T("加入自动查杀…"));
         terminate->setEnabled(own); kill->setEnabled(own); rule->setEnabled(own);
-        if (!own) { menu.addSeparator(); menu.addAction(QStringLiteral("其他用户的进程，无法操作"))->setEnabled(false); }
+        if (!own) { menu.addSeparator(); menu.addAction(T("其他用户的进程，无法操作"))->setEnabled(false); }
         const auto *chosen = menu.exec(tree->viewport()->mapToGlobal(position));
         if (chosen == terminate) emit q->processActionRequested(process, "terminate");
         else if (chosen == kill) emit q->processActionRequested(process, "kill");
@@ -327,7 +333,7 @@ struct MonitorWindow::Impl {
         processes.resize(count);
         fillProcesses(key, processes, [](const QJsonObject &process) {
             return QStringList{cpuPercent(process.value("cpuPercent")), bytes(process.value("memoryBytes"))};
-        }, QStringLiteral("暂无可读取的进程"));
+        }, T("暂无可读取的进程"));
     }
     static double diskBytes(const QJsonObject &process) {
         const auto read = process.value("ioReadBytesPerSecond"), write = process.value("ioWriteBytesPerSecond");
@@ -357,7 +363,7 @@ struct MonitorWindow::Impl {
             const auto wait = process.value("ioWaitPercent");
             return QStringList{bytes(process.value("ioReadBytesPerSecond"), true), bytes(process.value("ioWriteBytesPerSecond"), true),
                                wait.isDouble() ? QString::number(wait.toDouble(), 'f', 0) + '%' : unavailable()};
-        }, QStringLiteral("最近没有进程读写磁盘"));
+        }, T("最近没有进程读写磁盘"));
         DevStatsUI::fitRows(tables.value("diskProcesses"), 3, 12);
     }
     // Row objects are reused by process identity, keeping selection and scroll position.
@@ -379,8 +385,8 @@ struct MonitorWindow::Impl {
             if (!item) item = new QTreeWidgetItem;
             const QString owner = process.value("owner").toString();
             // DevStats' own row says so: it is excluded from findings, not hidden.
-            const QString name = process.value("name").toString() + (process.value("self").toBool() ? QStringLiteral("（本工具）") : QString());
-            const QStringList cells = QStringList{name, owner.isEmpty() ? QStringLiteral("我") : owner, number(process.value("pid"))}
+            const QString name = process.value("name").toString() + (process.value("self").toBool() ? T("（本工具）") : QString());
+            const QStringList cells = QStringList{name, owner.isEmpty() ? T("我") : owner, number(process.value("pid"))}
                 + measures(process);
             for (int column = 0; column < cells.size(); ++column) {
                 if (item->text(column) != cells[column]) item->setText(column, cells[column]);
@@ -433,11 +439,11 @@ struct MonitorWindow::Impl {
                 child->setData(0, Qt::UserRole, it.key());
                 for (int column = 1; column < 4; ++column) child->setTextAlignment(column, Qt::AlignRight | Qt::AlignVCenter);
             }
-            if (processes.isEmpty()) new QTreeWidgetItem(parent, {QStringLiteral("当前没有关联的运行进程"), unavailable(), unavailable(), unavailable()});
+            if (processes.isEmpty()) new QTreeWidgetItem(parent, {T("当前没有关联的运行进程"), unavailable(), unavailable(), unavailable()});
             parent->setExpanded(expanded.contains(it.key()) || !filter.isEmpty());
             if (selected == it.key()) parent->setSelected(true);
         }
-        if (!projectTree->topLevelItemCount()) row(projectTree, {QStringLiteral("添加项目目录，或启动开发进程"), unavailable(), unavailable(), unavailable()});
+        if (!projectTree->topLevelItemCount()) row(projectTree, {T("添加项目目录，或启动开发进程"), unavailable(), unavailable(), unavailable()});
         projectTree->verticalScrollBar()->setValue(scrollPosition);
     }
     void renderBatteryImpact() {
@@ -465,12 +471,12 @@ struct MonitorWindow::Impl {
             auto io = [](const QJsonObject &object, const QString &field) {
                 return bytes(object.value(field), true) + (object.value(field).isDouble() && !object.value(field + "Complete").toBool() ? QStringLiteral(" *") : QString());
             };
-            const QString processCount = app.value("noReadableProcesses").toBool() ? QStringLiteral("0（最近结束）") : number(app.value("processCount"));
+            const QString processCount = app.value("noReadableProcesses").toBool() ? T("0（最近结束）") : number(app.value("processCount"));
             auto *parent = new QTreeWidgetItem(tree, {app.value("name").toString(), processCount,
                 activity(app.value("cpuAveragePercent"), complete), io(app, "ioReadBytesPerSecond"), io(app, "ioWriteBytesPerSecond")});
             parent->setData(0, Qt::UserRole, identity);
             parent->setToolTip(0, app.value("desktopFile").toString() + '\n' + app.value("executablePath").toString());
-            parent->setToolTip(2, QStringLiteral("统计窗口 %1；完整采样覆盖 %2%。* 表示只测到部分活动。")
+            parent->setToolTip(2, T("统计窗口 %1；完整采样覆盖 %2%。* 表示只测到部分活动。")
                 .arg(duration(app.value("cpuObservationSeconds").toDouble())).arg(app.value("cpuCoverageFraction").toDouble() * 100, 0, 'f', 0));
             for (int column = 1; column < 5; ++column) parent->setTextAlignment(column, Qt::AlignRight | Qt::AlignVCenter);
             if (!complete) ++partial;
@@ -488,11 +494,11 @@ struct MonitorWindow::Impl {
             if (selected == identity) parent->setSelected(true);
             if (++count == 10) break;
         }
-        assign("batteryImpactNote", count ? QStringLiteral("统计窗口 %1 · CPU 100% = 1 个核心%2")
+        assign("batteryImpactNote", count ? T("统计窗口 %1 · CPU 100% = 1 个核心%2")
             .arg(duration(snapshot.value("activityObservationSeconds").toDouble()))
-            .arg(partial ? QStringLiteral(" · * 只测到部分活动") : QString())
-            : QStringLiteral("正在积累观测数据…"));
-        if (!count) row(tree, {QStringLiteral("等待有效应用采样"), unavailable(), unavailable(), unavailable(), unavailable()});
+            .arg(partial ? T(" · * 只测到部分活动") : QString())
+            : T("正在积累观测数据…"));
+        if (!count) row(tree, {T("等待有效应用采样"), unavailable(), unavailable(), unavailable(), unavailable()});
         tree->verticalScrollBar()->setValue(scroll); tree->setUpdatesEnabled(true);
     }
     void renderOverview() {
@@ -502,25 +508,25 @@ struct MonitorWindow::Impl {
         const QString tone = stateTone(diagnosis.value("state").toString());
         DevStatsUI::setTone(healthBanner, tone == "ok" ? QString() : tone);
         DevStatsUI::setTone(healthPill, tone);
-        healthPill->setText(tone == "critical" ? QStringLiteral("严重") : tone == "warn" ? QStringLiteral("注意") : tone == "ok" ? QStringLiteral("流畅") : QStringLiteral("采样中"));
-        healthHeadline->setText(diagnosis.value("headline").toString(QStringLiteral("正在收集数据")));
+        healthPill->setText(tone == "critical" ? T("严重") : tone == "warn" ? T("注意") : tone == "ok" ? T("流畅") : T("采样中"));
+        healthHeadline->setText(diagnosis.value("headline").toString(T("正在收集数据")));
         healthSummary->setText(diagnosis.value("summary").toString());
         const auto loads = cpu.value("load").toArray();
-        tiles["cpu"]->setContent(QStringLiteral("处理器"), percent(cpu.value("usage")),
-            loads.isEmpty() ? QString() : QStringLiteral("负载 %1 · %2 核").arg(number(loads[0], 1), number(cpu.value("coreCount"))), "ok", -1);
-        tiles["memory"]->setContent(QStringLiteral("内存"), percent(memory.value("fraction")),
-            QStringLiteral("可用 %1 / %2").arg(bytes(memory.value("availableBytes")), bytes(memory.value("totalBytes"))), "ok", -1);
-        tiles["disk"]->setContent(QStringLiteral("磁盘"), percent(io.value("busiestUtilization")),
-            QStringLiteral("读 %1 · 写 %2").arg(bytes(io.value("readBytesPerSecond"), true), bytes(io.value("writeBytesPerSecond"), true)), "ok", -1);
-        tiles["network"]->setContent(QStringLiteral("网络"), QStringLiteral("↑ ") + bytes(network.value("uploadBytesPerSecond"), true),
-            QStringLiteral("↓ %1 · %2").arg(bytes(network.value("downloadBytesPerSecond"), true), network.value("interface").toString(QStringLiteral("未连接"))), "ok", -1);
+        tiles["cpu"]->setContent(T("处理器"), percent(cpu.value("usage")),
+            loads.isEmpty() ? QString() : T("负载 %1 · %2 核").arg(number(loads[0], 1), number(cpu.value("coreCount"))), "ok", -1);
+        tiles["memory"]->setContent(T("内存"), percent(memory.value("fraction")),
+            T("可用 %1 / %2").arg(bytes(memory.value("availableBytes")), bytes(memory.value("totalBytes"))), "ok", -1);
+        tiles["disk"]->setContent(T("磁盘"), percent(io.value("busiestUtilization")),
+            T("读 %1 · 写 %2").arg(bytes(io.value("readBytesPerSecond"), true), bytes(io.value("writeBytesPerSecond"), true)), "ok", -1);
+        tiles["network"]->setContent(T("网络"), QStringLiteral("↑ ") + bytes(network.value("uploadBytesPerSecond"), true),
+            QStringLiteral("↓ %1 · %2").arg(bytes(network.value("downloadBytesPerSecond"), true), network.value("interface").toString(T("未连接"))), "ok", -1);
         processRows("overviewProcesses", false, 6);
         renderRecentIncidents();
         const auto automation = snapshot.value("processAutomation").toObject();
         int active = 0;
         for (const auto &value : automation.value("rules").toArray()) if (value.toObject().value("enabled").toBool()) ++active;
         const bool enabled = automation.value("enabled").toBool();
-        assign("overviewAutomation", enabled && active ? QStringLiteral("运行中 · %1 条规则").arg(active) : automation.value("rules").toArray().isEmpty() ? QStringLiteral("尚未设置规则") : QStringLiteral("已暂停"));
+        assign("overviewAutomation", enabled && active ? T("运行中 · %1 条规则").arg(active) : automation.value("rules").toArray().isEmpty() ? T("尚未设置规则") : T("已暂停"));
         auto *log = tables.value("overviewAutomationLog");
         const auto entries = automation.value("log").toArray();
         QStringList rendered;
@@ -547,10 +553,10 @@ struct MonitorWindow::Impl {
             auto *item = new QTreeWidgetItem(tree, {QDateTime::fromSecsSinceEpoch(at).toString("MM-dd HH:mm"),
                 event.value("summary").toString(), duration(event.value("durationSeconds").toDouble())});
             item->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
-            item->setToolTip(1, event.value("summary").toString() + (app.isEmpty() ? QString() : QStringLiteral("\n相关：") + app.value("name").toString()));
+            item->setToolTip(1, event.value("summary").toString() + (app.isEmpty() ? QString() : QLatin1Char('\n') + T("相关：%1").arg(app.value("name").toString())));
             if (++count == 4) break;
         }
-        if (!count) new QTreeWidgetItem(tree, {QStringLiteral("暂无记录"), QStringLiteral("发生卡顿时会自动记录"), unavailable()});
+        if (!count) new QTreeWidgetItem(tree, {T("暂无记录"), T("发生卡顿时会自动记录"), unavailable()});
     }
     void layoutTiles(int contentWidth) {
         const int columns = contentWidth >= 720 ? 4 : 2;
@@ -597,14 +603,14 @@ void MonitorWindow::Impl::buildOverview(QVBoxLayout *page) {
     healthBanner->setProperty("card", true);
     auto *banner = new QHBoxLayout(healthBanner);
     banner->setContentsMargins(16, 12, 14, 12); banner->setSpacing(12);
-    healthPill = DevStatsUI::pill(QStringLiteral("采样中"), {}, "healthState");
+    healthPill = DevStatsUI::pill(T("采样中"), {}, "healthState");
     banner->addWidget(healthPill, 0, Qt::AlignTop);
     auto *words = new QVBoxLayout; words->setSpacing(2);
-    healthHeadline = label(QStringLiteral("正在收集数据"), "headline", "healthHeadline");
+    healthHeadline = label(T("正在收集数据"), "headline", "healthHeadline");
     healthSummary = label({}, "caption", "healthSummary");
     words->addWidget(healthHeadline); words->addWidget(healthSummary);
     banner->addLayout(words, 1);
-    auto *diagnose = new QPushButton(QStringLiteral("一键诊断"));
+    auto *diagnose = new QPushButton(T("一键诊断"));
     diagnose->setObjectName("overviewDiagnose");
     diagnose->setProperty("primary", true);
     banner->addWidget(diagnose, 0, Qt::AlignVCenter);
@@ -638,24 +644,24 @@ void MonitorWindow::Impl::buildOverview(QVBoxLayout *page) {
     overviewColumns->setContentsMargins(0, 0, 0, 0); overviewColumns->setSpacing(10);
     // The cards are placed in a grid below, so this layout only hands them over.
     QVBoxLayout hidden;
-    auto *processes = card(&hidden, QStringLiteral("最忙的进程"), QStringLiteral("含系统进程。右键可结束或加入自动查杀。"));
+    auto *processes = card(&hidden, T("最忙的进程"), T("含系统进程。右键可结束或加入自动查杀。"));
     processes->addWidget(processTable("overviewProcesses", 188));
-    auto *incidentsCard = new QPushButton(QStringLiteral("全部记录"));
+    auto *incidentsCard = new QPushButton(T("全部记录"));
     incidentsCard->setObjectName("overviewAllIncidents");
     connect(incidentsCard, &QPushButton::clicked, q, [this] { q->showIncidents(); });
-    auto *recent = card(&hidden, QStringLiteral("最近的卡顿"), {}, incidentsCard);
-    auto *recentTable = DevStatsUI::table("overviewIncidents", {QStringLiteral("时间"), QStringLiteral("原因"), QStringLiteral("持续")});
+    auto *recent = card(&hidden, T("最近的卡顿"), {}, incidentsCard);
+    auto *recentTable = DevStatsUI::table("overviewIncidents", {T("时间"), T("原因"), T("持续")});
     recentTable->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     recentTable->header()->setSectionResizeMode(1, QHeaderView::Stretch);
     recentTable->headerItem()->setTextAlignment(1, Qt::AlignLeft | Qt::AlignVCenter);
     recentTable->setMinimumHeight(118);
     tables["overviewIncidents"] = recentTable;
     recent->addWidget(recentTable);
-    auto *rulesOpen = new QPushButton(QStringLiteral("管理规则"));
+    auto *rulesOpen = new QPushButton(T("管理规则"));
     rulesOpen->setObjectName("overviewAutomationOpen");
     connect(rulesOpen, &QPushButton::clicked, q, [this] { navigation->setCurrentRow(rowFor("automation")); });
-    auto *automation = card(&hidden, QStringLiteral("自动查杀"), {}, rulesOpen);
-    auto *automationState = label(QStringLiteral("尚未设置规则"), "caption", "overviewAutomation");
+    auto *automation = card(&hidden, T("自动查杀"), {}, rulesOpen);
+    auto *automationState = label(T("尚未设置规则"), "caption", "overviewAutomation");
     values.insert("overviewAutomation", automationState);
     automation->addWidget(automationState);
     auto *automationLog = new QTreeWidget;
@@ -677,48 +683,46 @@ void MonitorWindow::Impl::buildOverview(QVBoxLayout *page) {
 }
 
 void MonitorWindow::Impl::buildCpu(QVBoxLayout *page) {
-    auto *summary = card(page, QStringLiteral("处理器使用率"));
-    auto *figures = new QHBoxLayout; figures->setSpacing(24);
-    stat(figures, "cpuUsage", QStringLiteral("当前"), "number");
-    stat(figures, "cpuUser", QStringLiteral("用户"));
-    stat(figures, "cpuSystem", QStringLiteral("系统"));
-    stat(figures, "cpuIowait", QStringLiteral("I/O 等待"));
-    stat(figures, "cpuLoad", QStringLiteral("负载 1 / 5 / 15 分"));
-    stat(figures, "cpuFrequency", QStringLiteral("频率"));
-    stat(figures, "cpuTemperature", QStringLiteral("温度"));
-    stat(figures, "cpuUptime", QStringLiteral("开机"));
-    figures->addStretch();
+    auto *summary = card(page, T("处理器使用率"));
+    auto *figures = new FlowLayout(24, 10);
+    stat(figures, "cpuUsage", T("当前"), "number");
+    stat(figures, "cpuUser", T("用户"));
+    stat(figures, "cpuSystem", T("系统"));
+    stat(figures, "cpuIowait", T("I/O 等待"));
+    stat(figures, "cpuLoad", T("负载 1 / 5 / 15 分"));
+    stat(figures, "cpuFrequency", T("频率"));
+    stat(figures, "cpuTemperature", T("温度"));
+    stat(figures, "cpuUptime", T("开机"));
     summary->addLayout(figures);
     chart(summary, "cpu", HistoryChart::Unit::Percent);
     cpuBreakdown = new ResourceBreakdown;
     cpuBreakdown->setObjectName("cpuBreakdown");
     summary->addWidget(cpuBreakdown);
-    auto *coreCard = card(page, QStringLiteral("逻辑核心"));
+    auto *coreCard = card(page, T("逻辑核心"));
     coreGrid = new QGridLayout; coreGrid->setHorizontalSpacing(10); coreGrid->setVerticalSpacing(6);
     coreCard->addLayout(coreGrid);
-    auto *processes = card(page, QStringLiteral("CPU 占用最高的进程"), QStringLiteral("含系统进程 · 100% 为占满一个核心 · 右键可结束或加入自动查杀"));
+    auto *processes = card(page, T("CPU 占用最高的进程"), T("含系统进程 · 100% 为占满一个核心 · 右键可结束或加入自动查杀"));
     processes->addWidget(processTable("cpuProcesses", 280));
 }
 
 void MonitorWindow::Impl::buildMemory(QVBoxLayout *page) {
-    auto *relief = new QPushButton(QStringLiteral("内存减压…"));
+    auto *relief = new QPushButton(T("内存减压…"));
     relief->setObjectName("memoryReliefFromMemory");
     connect(relief, &QPushButton::clicked, q, &MonitorWindow::memoryReliefRequested);
-    auto *summary = card(page, QStringLiteral("物理内存"), {}, relief);
-    auto *figures = new QHBoxLayout; figures->setSpacing(24);
-    stat(figures, "memoryUsed", QStringLiteral("已使用"), "number");
-    stat(figures, "memoryAvailable", QStringLiteral("可用"), "number");
-    stat(figures, "memoryTotal", QStringLiteral("总计"));
-    stat(figures, "memoryCached", QStringLiteral("页缓存"));
-    stat(figures, "memoryBuffers", QStringLiteral("缓冲"));
-    stat(figures, "memorySwap", QStringLiteral("交换分区"));
-    figures->addStretch();
+    auto *summary = card(page, T("物理内存"), {}, relief);
+    auto *figures = new FlowLayout(24, 10);
+    stat(figures, "memoryUsed", T("已使用"), "number");
+    stat(figures, "memoryAvailable", T("可用"), "number");
+    stat(figures, "memoryTotal", T("总计"));
+    stat(figures, "memoryCached", T("页缓存"));
+    stat(figures, "memoryBuffers", T("缓冲"));
+    stat(figures, "memorySwap", T("交换分区"));
     summary->addLayout(figures);
     chart(summary, "memory", HistoryChart::Unit::Percent);
     memoryBreakdown = new ResourceBreakdown;
     memoryBreakdown->setObjectName("memoryBreakdown");
     summary->addWidget(memoryBreakdown);
-    auto *processes = card(page, QStringLiteral("内存占用最高的进程"), QStringLiteral("含系统进程 · 内存为 RSS，可能包含共享页 · 右键可结束或加入自动查杀"));
+    auto *processes = card(page, T("内存占用最高的进程"), T("含系统进程 · 内存为 RSS，可能包含共享页 · 右键可结束或加入自动查杀"));
     processes->addWidget(processTable("memoryProcesses", 280));
 }
 
@@ -737,20 +741,20 @@ QLabel *MonitorWindow::Impl::transferRow(QVBoxLayout *card, const QString &key, 
 }
 
 void MonitorWindow::Impl::buildDisk(QVBoxLayout *page) {
-    auto *summary = card(page, QStringLiteral("磁盘读写"));
-    transferRow(summary, "diskRead", QStringLiteral("读取"));
-    transferRow(summary, "diskWrite", QStringLiteral("写入"));
-    auto *busiest = card(page, QStringLiteral("读写最多的进程"),
-        QStringLiteral("按读写量排列当前用户的进程。系统进程的读写量需要 root 权限才能读取，能统计时按等待磁盘的时间列在后面。右键可结束或加入自动查杀。"));
-    auto *diskProcesses = processTable("diskProcesses", 0, {QStringLiteral("进程"), QStringLiteral("用户"), "PID", QStringLiteral("读取"),
-                                                              QStringLiteral("写入"), QStringLiteral("等待磁盘")});
+    auto *summary = card(page, T("磁盘读写"));
+    transferRow(summary, "diskRead", T("读取"));
+    transferRow(summary, "diskWrite", T("写入"));
+    auto *busiest = card(page, T("读写最多的进程"),
+        T("按读写量排列当前用户的进程。系统进程的读写量需要 root 权限才能读取，能统计时按等待磁盘的时间列在后面。右键可结束或加入自动查杀。"));
+    auto *diskProcesses = processTable("diskProcesses", 0, {T("进程"), T("用户"), "PID", T("读取"),
+                                                              T("写入"), T("等待磁盘")});
     busiest->addWidget(diskProcesses);
-    auto *devices = card(page, QStringLiteral("磁盘设备"), QStringLiteral("繁忙度和平均等待时间比吞吐量更能反映卡顿。"));
-    auto *deviceTable = DevStatsUI::table("diskDevices", {QStringLiteral("设备"), QStringLiteral("读取"), QStringLiteral("写入"), QStringLiteral("繁忙"), QStringLiteral("平均等待")});
+    auto *devices = card(page, T("磁盘设备"), T("繁忙度和平均等待时间比吞吐量更能反映卡顿。"));
+    auto *deviceTable = DevStatsUI::table("diskDevices", {T("设备"), T("读取"), T("写入"), T("繁忙"), T("平均等待")});
     tables["devices"] = deviceTable;
     devices->addWidget(deviceTable);
-    auto *volumes = card(page, QStringLiteral("本地卷"));
-    auto *volumeTable = DevStatsUI::table("diskVolumes", {QStringLiteral("挂载点"), QStringLiteral("文件系统"), QStringLiteral("已用"), QStringLiteral("可用"), QStringLiteral("总计")});
+    auto *volumes = card(page, T("本地卷"));
+    auto *volumeTable = DevStatsUI::table("diskVolumes", {T("挂载点"), T("文件系统"), T("已用"), T("可用"), T("总计")});
     volumeTable->headerItem()->setTextAlignment(1, Qt::AlignLeft | Qt::AlignVCenter);
     tables["volumes"] = volumeTable;
     volumes->addWidget(volumeTable);
@@ -758,16 +762,16 @@ void MonitorWindow::Impl::buildDisk(QVBoxLayout *page) {
 
 void MonitorWindow::Impl::buildNetwork(QVBoxLayout *page) {
     // Upload is deliberately above download, everywhere in this application.
-    auto *transfers = card(page, QStringLiteral("网络传输"));
-    transferRow(transfers, "networkUpload", QStringLiteral("↑ 上传"));
-    transferRow(transfers, "networkDownload", QStringLiteral("↓ 下载"));
+    auto *transfers = card(page, T("网络传输"));
+    transferRow(transfers, "networkUpload", T("↑ 上传"));
+    transferRow(transfers, "networkDownload", T("↓ 下载"));
     networkActivity = new NetworkActivityPanel;
     page->addWidget(networkActivity);
-    auto *interfaceCard = card(page, QStringLiteral("当前网络接口"));
+    auto *interfaceCard = card(page, T("当前网络接口"));
     auto *first = new QHBoxLayout; first->setSpacing(24);
-    stat(first, "networkInterface", QStringLiteral("默认路由接口"));
-    stat(first, "networkTx", QStringLiteral("累计上传"));
-    stat(first, "networkRx", QStringLiteral("累计下载"));
+    stat(first, "networkInterface", T("默认路由接口"));
+    stat(first, "networkTx", T("累计上传"));
+    stat(first, "networkRx", T("累计下载"));
     first->addStretch();
     interfaceCard->addLayout(first);
     auto *second = new QHBoxLayout; second->setSpacing(24);
@@ -778,23 +782,22 @@ void MonitorWindow::Impl::buildNetwork(QVBoxLayout *page) {
 }
 
 void MonitorWindow::Impl::buildBattery(QVBoxLayout *page) {
-    auto *summary = card(page, QStringLiteral("电池与电源"));
-    auto *figures = new QHBoxLayout; figures->setSpacing(24);
+    auto *summary = card(page, T("电池与电源"));
+    auto *figures = new FlowLayout(24, 10);
     batteryGlyph = new BatteryIndicator;
     figures->addWidget(batteryGlyph);
-    stat(figures, "batteryLevel", QStringLiteral("当前电量"), "number");
-    stat(figures, "batteryState", QStringLiteral("电源状态"));
-    stat(figures, "batteryHealth", QStringLiteral("电池健康"));
-    stat(figures, "batteryCycles", QStringLiteral("循环次数"));
-    figures->addStretch();
+    stat(figures, "batteryLevel", T("当前电量"), "number");
+    stat(figures, "batteryState", T("电源状态"));
+    stat(figures, "batteryHealth", T("电池健康"));
+    stat(figures, "batteryCycles", T("循环次数"));
     summary->addLayout(figures);
     auto *history = chart(summary, "battery", HistoryChart::Unit::Percent);
     history->setMaximumHeight(150);
-    auto *impact = card(page, QStringLiteral("应用耗电影响"), QStringLiteral("按应用合并多个进程。CPU 和磁盘活动是估算线索，不代表瓦数；GPU、屏幕和外设没有归因。"));
-    auto *note = label(QStringLiteral("正在积累观测数据…"), "muted", "batteryImpactNote");
+    auto *impact = card(page, T("应用耗电影响"), T("按应用合并多个进程。CPU 和磁盘活动是估算线索，不代表瓦数；GPU、屏幕和外设没有归因。"));
+    auto *note = label(T("正在积累观测数据…"), "muted", "batteryImpactNote");
     values["batteryImpactNote"] = note;
     impact->addWidget(note);
-    auto *tree = DevStatsUI::table("batteryImpactTable", {QStringLiteral("应用 / 进程"), QStringLiteral("进程数 / PID"), QStringLiteral("平均 CPU"), QStringLiteral("读取"), QStringLiteral("写入")});
+    auto *tree = DevStatsUI::table("batteryImpactTable", {T("应用 / 进程"), T("进程数 / PID"), T("平均 CPU"), T("读取"), T("写入")});
     tree->setRootIsDecorated(true);
     tree->setMinimumHeight(280);
     tables["batteryImpact"] = tree;
@@ -802,17 +805,17 @@ void MonitorWindow::Impl::buildBattery(QVBoxLayout *page) {
 }
 
 void MonitorWindow::Impl::buildProjects(QVBoxLayout *page) {
-    auto *projects = card(page, QStringLiteral("项目与关联进程"), QStringLiteral("按工作目录和父子进程关系自动归组。移除目录只是取消手动归组，不会删除文件。"));
+    auto *projects = card(page, T("项目与关联进程"), T("按工作目录和父子进程关系自动归组。移除目录只是取消手动归组，不会删除文件。"));
     auto *tools = new QHBoxLayout;
     projectFilter = new QLineEdit;
     projectFilter->setObjectName("projectFilter");
-    projectFilter->setPlaceholderText(QStringLiteral("筛选项目、路径或进程 · Ctrl+F"));
+    projectFilter->setPlaceholderText(T("筛选项目、路径或进程 · Ctrl+F"));
     tools->addWidget(projectFilter, 1);
-    auto *add = new QPushButton(QStringLiteral("添加目录")); add->setObjectName("addProject");
-    auto *remove = new QPushButton(QStringLiteral("移除目录")); remove->setObjectName("removeProject");
+    auto *add = new QPushButton(T("添加目录")); add->setObjectName("addProject");
+    auto *remove = new QPushButton(T("移除目录")); remove->setObjectName("removeProject");
     tools->addWidget(add); tools->addWidget(remove);
     projects->addLayout(tools);
-    projectTree = DevStatsUI::table("projectTree", {QStringLiteral("项目 / 进程"), "CPU", QStringLiteral("内存"), QStringLiteral("进程数 / PID")});
+    projectTree = DevStatsUI::table("projectTree", {T("项目 / 进程"), "CPU", T("内存"), T("进程数 / PID")});
     projectTree->setRootIsDecorated(true);
     projectTree->setMinimumHeight(420);
     projects->addWidget(projectTree);
@@ -848,34 +851,34 @@ QWidget *MonitorWindow::Impl::buildSidebar(const QPalette &theme) {
     navigation->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     navigation->setFrameShape(QFrame::NoFrame);
     const QList<QPair<QString, QStringList>> groups{
-        {QStringLiteral("监控"), {"overview", "cpu", "memory", "disk", "network", "battery"}},
-        {QStringLiteral("排查"), {"diagnostics", "automation"}},
-        {QStringLiteral("开发"), {"projects"}}};
+        {T("监控"), {"overview", "cpu", "memory", "disk", "network", "battery"}},
+        {T("排查"), {"diagnostics", "automation"}},
+        {T("开发"), {"projects"}}};
     for (const auto &group : groups) {
         auto *section = new QListWidgetItem(group.first, navigation);
         section->setFlags(Qt::NoItemFlags);
         for (const auto &module : group.second) {
             const int index = Modules.indexOf(module);
-            auto *item = new QListWidgetItem(moduleIcon(module, theme), Titles[index], navigation);
+            auto *item = new QListWidgetItem(moduleIcon(module, theme), titles()[index], navigation);
             item->setData(ModuleRole, module);
-            item->setToolTip(Subtitles[index] + QStringLiteral(" · Ctrl+%1").arg(index + 1));
+            item->setToolTip(subtitles()[index] + QStringLiteral(" · Ctrl+%1").arg(index + 1));
             auto *shortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(index + 1)), q);
             shortcut->setObjectName(QStringLiteral("moduleShortcut%1").arg(index + 1));
             connect(shortcut, &QShortcut::activated, q, [this, module] { navigation->setCurrentRow(rowFor(module)); });
         }
     }
     layout->addWidget(navigation, 1);
-    host = label(QStringLiteral("本机监控"), "muted", "hostSummary");
+    host = label(T("本机监控"), "muted", "hostSummary");
     layout->addWidget(host);
     layout->addWidget(DevStatsUI::separator());
     auto *launchers = new QHBoxLayout;
     launchers->setObjectName("quickLaunch"); launchers->setSpacing(2); launchers->setContentsMargins(0, 2, 0, 0);
-    for (const auto &entry : QList<QPair<QString, QString>>{{"terminal", QStringLiteral("终端")}, {"monitor", QStringLiteral("系统监视器")}, {"files", QStringLiteral("文件")}, {"settings", QStringLiteral("系统设置")}}) {
+    for (const auto &entry : QList<QPair<QString, QString>>{{"terminal", T("终端")}, {"monitor", T("系统监视器")}, {"files", T("文件")}, {"settings", T("系统设置")}}) {
         auto *button = new QToolButton;
         button->setObjectName("launch_" + entry.first);
         button->setProperty("quick", true);
         button->setIcon(quickIcon(entry.first, theme)); button->setIconSize(QSize(18, 18)); button->setFixedSize(28, 28);
-        button->setToolTip(QStringLiteral("打开") + entry.second); button->setAccessibleName(QStringLiteral("打开") + entry.second);
+        button->setToolTip(T("打开%1").arg(entry.second)); button->setAccessibleName(T("打开%1").arg(entry.second));
         launchers->addWidget(button);
         const QString id = entry.first;
         connect(button, &QToolButton::clicked, q, [this, id] { emit q->quickLaunchRequested(id); });
@@ -883,7 +886,7 @@ QWidget *MonitorWindow::Impl::buildSidebar(const QPalette &theme) {
     auto *addQuick = new QToolButton;
     addQuick->setObjectName("addQuickApplication"); addQuick->setProperty("quick", true);
     addQuick->setIcon(quickIcon("add", theme)); addQuick->setIconSize(QSize(18, 18)); addQuick->setFixedSize(28, 28);
-    addQuick->setToolTip(QStringLiteral("添加快捷应用")); addQuick->setAccessibleName(QStringLiteral("添加快捷应用"));
+    addQuick->setToolTip(T("添加快捷应用")); addQuick->setAccessibleName(T("添加快捷应用"));
     launchers->addWidget(addQuick);
     connect(addQuick, &QToolButton::clicked, q, [this] { emit q->quickLaunchRequested("add"); });
     customLaunches = new QHBoxLayout; customLaunches->setSpacing(2);
@@ -899,25 +902,25 @@ QWidget *MonitorWindow::Impl::buildHeader(const QPalette &theme) {
     auto *header = new QHBoxLayout(headerBar);
     header->setContentsMargins(20, 12, 16, 4); header->setSpacing(10);
     auto *headings = new QVBoxLayout; headings->setSpacing(0);
-    title = label(Titles.first(), "title", "moduleTitle"); title->setWordWrap(false);
-    subtitle = label(Subtitles.first(), "caption", "moduleSubtitle"); subtitle->setWordWrap(false);
+    title = label(titles().first(), "title", "moduleTitle"); title->setWordWrap(false);
+    subtitle = label(subtitles().first(), "caption", "moduleSubtitle"); subtitle->setWordWrap(false);
     headings->addWidget(title); headings->addWidget(subtitle);
     header->addLayout(headings, 1);
-    updated = label(QStringLiteral("等待首次采样"), "muted", "sampleStatus"); updated->setWordWrap(false);
+    updated = label(T("等待首次采样"), "muted", "sampleStatus"); updated->setWordWrap(false);
     header->addWidget(updated);
     range = new QComboBox;
     range->setObjectName("historyRange");
     const QList<qint64> durations = {120, 600, 3600, 21600, 86400, 604800, 2592000};
-    const QStringList durationLabels = {QStringLiteral("2 分钟"), QStringLiteral("10 分钟"), QStringLiteral("1 小时"), QStringLiteral("6 小时"), QStringLiteral("24 小时"), QStringLiteral("7 天"), QStringLiteral("30 天")};
+    const QStringList durationLabels = {T("2 分钟"), T("10 分钟"), T("1 小时"), T("6 小时"), T("24 小时"), T("7 天"), T("30 天")};
     for (int i = 0; i < durations.size(); ++i) range->addItem(durationLabels[i], durations[i]);
     range->setCurrentIndex(1);
-    range->setToolTip(QStringLiteral("历史曲线的时间范围")); range->setAccessibleName(QStringLiteral("历史范围"));
+    range->setToolTip(T("历史曲线的时间范围")); range->setAccessibleName(T("历史范围"));
     header->addWidget(range);
     auto *settingsButton = new QToolButton;
     settingsButton->setObjectName("settingsButton");
     settingsButton->setProperty("ghost", true);
     settingsButton->setIcon(quickIcon("settings", theme)); settingsButton->setIconSize(QSize(20, 20)); settingsButton->setFixedSize(30, 30);
-    settingsButton->setToolTip(QStringLiteral("设置 · Ctrl+,")); settingsButton->setAccessibleName(QStringLiteral("设置"));
+    settingsButton->setToolTip(T("设置 · Ctrl+,")); settingsButton->setAccessibleName(T("设置"));
     header->addWidget(settingsButton);
     connect(settingsButton, &QToolButton::clicked, q, &MonitorWindow::showSettings);
     connect(range, QOverload<int>::of(&QComboBox::currentIndexChanged), q, [this] { emit q->durationChanged(q->historyDuration()); });
@@ -981,8 +984,8 @@ MonitorWindow::MonitorWindow(int appearance, QWidget *parent) : QMainWindow(pare
         const int index = Modules.indexOf(module);
         if (index < 0) return;
         d->pages->setCurrentIndex(index);
-        d->title->setText(Titles[index]);
-        d->subtitle->setText(Subtitles[index]);
+        d->title->setText(titles()[index]);
+        d->subtitle->setText(subtitles()[index]);
         d->range->setVisible(HistoryModules.contains(module));
         renderCurrentSnapshot();
         renderCurrentHistories();
@@ -1013,7 +1016,7 @@ void MonitorWindow::setSnapshot(const QJsonObject &snapshot) {
     if (d->snapshot == snapshot) return;
     d->snapshot = snapshot;
     const qint64 timestamp = qint64(snapshot.value("timestamp").toDouble());
-    d->updated->setText(timestamp > 0 ? QDateTime::fromSecsSinceEpoch(timestamp).toString("hh:mm:ss") + QStringLiteral(" 更新") : QStringLiteral("等待首次采样"));
+    d->updated->setText(timestamp > 0 ? T("%1 更新").arg(QDateTime::fromSecsSinceEpoch(timestamp).toString("hh:mm:ss")) : T("等待首次采样"));
     // Badges are visible from every page, so they follow every sample.
     const QString state = snapshot.value("diagnostics").toObject().value("state").toString();
     auto *diagnosticsItem = d->navigation->item(d->rowFor("diagnostics"));
@@ -1038,7 +1041,7 @@ void MonitorWindow::renderCurrentSnapshot() {
     if (d->snapshot.isEmpty()) return;
     const auto &snapshot = d->snapshot;
     const QString module = selectedModule();
-    const QString host = number(snapshot.value("cpu").toObject().value("coreCount")) + QStringLiteral(" 核 · ") + bytes(snapshot.value("memory").toObject().value("totalBytes"));
+    const QString host = T("%1 核 · %2").arg(number(snapshot.value("cpu").toObject().value("coreCount")), bytes(snapshot.value("memory").toObject().value("totalBytes")));
     if (d->host->text() != host) d->host->setText(host);
     static const QHash<QString, QStringList> fields{
         {"overview", {"cpu", "memory", "network", "diskIO", "diagnostics", "processes", "systemProcesses", "processAutomation"}},
@@ -1062,10 +1065,10 @@ void MonitorWindow::renderCurrentSnapshot() {
             QVector<ResourceBreakdown::Segment> parts;
             if (user >= 0 && system >= 0 && user + system <= usage + .002) {
                 const double u = std::min(user, usage), s = std::min(system, usage - u);
-                parts = {{QStringLiteral("用户"), u, {}}, {QStringLiteral("系统"), s, {}}};
-                if (usage - u - s > .00001) parts.append({QStringLiteral("其他"), usage - u - s, {}});
-            } else parts.append({QStringLiteral("已使用"), usage, {}});
-            parts.append({QStringLiteral("空闲"), 1 - usage, {}});
+                parts = {{T("用户"), u, {}}, {T("系统"), s, {}}};
+                if (usage - u - s > .00001) parts.append({T("其他"), usage - u - s, {}});
+            } else parts.append({T("已使用"), usage, {}});
+            parts.append({T("空闲"), 1 - usage, {}});
             d->cpuBreakdown->setSegments(parts);
         } else d->cpuBreakdown->setSegments({});
         d->assign("cpuUsage", percent(cpu.value("usage"))); d->assign("cpuUser", percent(cpu.value("user"))); d->assign("cpuSystem", percent(cpu.value("system")));
@@ -1092,7 +1095,7 @@ void MonitorWindow::renderCurrentSnapshot() {
             d->cores[i]->setVisible(exists);
             if (exists) {
                 d->cores[i]->setValue(int(qMax(0.0, numeric(coreValues[i])) * 100));
-                d->cores[i]->setFormat(QStringLiteral("核心 %1   %2").arg(i + 1).arg(percent(coreValues[i])));
+                d->cores[i]->setFormat(T("核心 %1   %2").arg(i + 1).arg(percent(coreValues[i])));
             }
         }
         d->processRows("cpuProcesses", false, 10);
@@ -1100,8 +1103,8 @@ void MonitorWindow::renderCurrentSnapshot() {
     if (module == "memory") {
         const double total = numeric(memory.value("totalBytes")), used = numeric(memory.value("usedBytes")), availableBytes = numeric(memory.value("availableBytes"));
         if (total > 0 && used >= 0 && availableBytes >= 0 && std::abs(used + availableBytes - total) <= std::max(1., total * .002))
-            d->memoryBreakdown->setSegments({{QStringLiteral("已用"), used / total, formatBytes(used) + " · " + formatPercent(used / total)},
-                {QStringLiteral("可用"), availableBytes / total, formatBytes(availableBytes) + " · " + formatPercent(availableBytes / total)}});
+            d->memoryBreakdown->setSegments({{T("已用"), used / total, formatBytes(used) + " · " + formatPercent(used / total)},
+                {T("可用"), availableBytes / total, formatBytes(availableBytes) + " · " + formatPercent(availableBytes / total)}});
         else d->memoryBreakdown->setSegments({});
         for (const auto &pair : QList<QPair<QString, QString>>{{"memoryUsed", "usedBytes"}, {"memoryAvailable", "availableBytes"}, {"memoryTotal", "totalBytes"}, {"memoryCached", "cachedBytes"}, {"memoryBuffers", "buffersBytes"}})
             d->assign(pair.first, bytes(memory.value(pair.second)));
@@ -1117,16 +1120,16 @@ void MonitorWindow::renderCurrentSnapshot() {
             row(d->tables["volumes"], {volume.value("mountPoint").toString(), volume.value("filesystem").toString(), percent(volume.value("usageFraction")), bytes(volume.value("availableBytes")), bytes(volume.value("totalBytes"))});
             d->tables["volumes"]->topLevelItem(d->tables["volumes"]->topLevelItemCount() - 1)->setTextAlignment(1, Qt::AlignLeft | Qt::AlignVCenter);
         }
-        if (!d->tables["volumes"]->topLevelItemCount()) row(d->tables["volumes"], {QStringLiteral("暂无可读取的本地卷"), unavailable(), unavailable(), unavailable(), unavailable()});
+        if (!d->tables["volumes"]->topLevelItemCount()) row(d->tables["volumes"], {T("暂无可读取的本地卷"), unavailable(), unavailable(), unavailable(), unavailable()});
         DevStatsUI::fitRows(d->tables["volumes"], 1, 12);
         d->tables["devices"]->clear();
         for (const auto &entry : io.value("devices").toArray()) {
             const auto device = entry.toObject();
             const auto wait = device.value("awaitMilliseconds");
             row(d->tables["devices"], {device.value("device").toString(), bytes(device.value("readBytesPerSecond"), true), bytes(device.value("writeBytesPerSecond"), true),
-                percent(device.value("utilization")), wait.isDouble() ? QString::number(wait.toDouble(), 'f', 1) + QStringLiteral(" 毫秒") : unavailable()});
+                percent(device.value("utilization")), wait.isDouble() ? T("%1 毫秒").arg(QString::number(wait.toDouble(), 'f', 1)) : unavailable()});
         }
-        if (!d->tables["devices"]->topLevelItemCount()) row(d->tables["devices"], {QStringLiteral("暂无可读取的磁盘设备"), unavailable(), unavailable(), unavailable(), unavailable()});
+        if (!d->tables["devices"]->topLevelItemCount()) row(d->tables["devices"], {T("暂无可读取的磁盘设备"), unavailable(), unavailable(), unavailable(), unavailable()});
         DevStatsUI::fitRows(d->tables["devices"], 1, 8);
     }
     if (module == "network") {
@@ -1135,7 +1138,7 @@ void MonitorWindow::renderCurrentSnapshot() {
         d->networkActivity->setObservation(snapshot.value("networkApplications").toObject(), snapshot.value("networkApplicationsPrevious").toObject());
         QString interface = network.value("interface").toString();
         if (interface.isEmpty()) interface = unavailable();
-        if (network.value("isUp").isBool()) interface += network.value("isUp").toBool() ? QStringLiteral(" · 已连接") : QStringLiteral(" · 未连接");
+        if (network.value("isUp").isBool()) interface += network.value("isUp").toBool() ? T(" · 已连接") : T(" · 未连接");
         d->assign("networkInterface", interface);
         d->assign("networkIPv4", jsonStrings(network.value("ipv4").toArray())); d->assign("networkIPv6", jsonStrings(network.value("ipv6").toArray()));
         d->assign("networkTx", bytes(network.value("txBytes"))); d->assign("networkRx", bytes(network.value("rxBytes")));
@@ -1185,8 +1188,8 @@ void MonitorWindow::setSelectedModule(const QString &module) {
         d->navigation->setCurrentRow(d->rowFor(module));
     }
     d->pages->setCurrentIndex(index);
-    d->title->setText(Titles[index]);
-    d->subtitle->setText(Subtitles[index]);
+    d->title->setText(titles()[index]);
+    d->subtitle->setText(subtitles()[index]);
     d->range->setVisible(HistoryModules.contains(module));
     renderCurrentSnapshot();
     renderCurrentHistories();
@@ -1199,7 +1202,8 @@ QString MonitorWindow::selectedModule() const {
 }
 qint64 MonitorWindow::historyDuration() const { return d->range->currentData().toLongLong(); }
 
-void MonitorWindow::setPreferences(bool autoStart, int trayTheme, const QStringList &manualProjects, const QStringList &customApps, bool largeTrayText, bool automationNotifications) {
+void MonitorWindow::setPreferences(bool autoStart, int trayTheme, const QStringList &manualProjects, const QStringList &customApps, bool largeTrayText, bool automationNotifications, int language) {
+    d->language = qBound(0, language, 2);
     d->largeTrayText = largeTrayText;
     d->automationNotifications = automationNotifications;
     if (d->largeTextCheck) { QSignalBlocker block(d->largeTextCheck); d->largeTextCheck->setChecked(largeTrayText); }
@@ -1216,7 +1220,7 @@ void MonitorWindow::setPreferences(bool autoStart, int trayTheme, const QStringL
         auto *button = new QToolButton;
         button->setObjectName("customAppLauncher"); button->setProperty("quick", true);
         button->setIcon(quickIcon("apps", palette())); button->setIconSize(QSize(18, 18)); button->setFixedSize(28, 28);
-        button->setToolTip(QStringLiteral("自定义快捷应用")); button->setAccessibleName(QStringLiteral("自定义快捷应用"));
+        button->setToolTip(T("自定义快捷应用")); button->setAccessibleName(T("自定义快捷应用"));
         auto *menu = new QMenu(button);
         for (const auto &path : customApps) {
             auto *action = menu->addAction(QFileInfo(path).completeBaseName());
@@ -1257,67 +1261,81 @@ void MonitorWindow::setAppearance(int mode) {
     d->navigation->viewport()->update();
 }
 
+bool MonitorWindow::settingsVisible() const { return d->settings && d->settings->isVisible(); }
+
 void MonitorWindow::showSettings() {
     if (d->settings) { d->settings->show(); d->settings->raise(); d->settings->activateWindow(); return; }
     auto *dialog = new QDialog(this);
     dialog->setObjectName("preferencesDialog");
-    dialog->setWindowTitle(QStringLiteral("DevStats 设置"));
+    dialog->setWindowTitle(T("DevStats 设置"));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->resize(480, 500);
     dialog->setPalette(palette());
     d->settings = dialog;
     auto *layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(20, 18, 20, 16); layout->setSpacing(12);
-    layout->addWidget(label(QStringLiteral("设置"), "title"));
+    layout->addWidget(label(T("设置"), "title"));
     auto *form = new QFormLayout;
     form->setHorizontalSpacing(20); form->setVerticalSpacing(10);
     form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
     auto *appearance = new QComboBox;
     appearance->setObjectName("appearanceMode");
-    appearance->addItems({QStringLiteral("跟随系统"), QStringLiteral("深色"), QStringLiteral("浅色")});
+    appearance->addItems({T("跟随系统"), T("深色"), T("浅色")});
     appearance->setCurrentIndex(d->appearance);
     d->appearanceCombo = appearance;
-    form->addRow(QStringLiteral("界面外观"), appearance);
+    form->addRow(T("界面外观"), appearance);
+    auto *language = new QComboBox;
+    language->setObjectName("languageMode");
+    // Each language is named in itself, so it can be found whichever one is showing.
+    language->addItems({T("跟随系统"), QString::fromUtf8("中文"), QStringLiteral("English")}); // i18n: keep
+    language->setCurrentIndex(d->language);
+    form->addRow(T("语言"), language);
     auto *themes = new QComboBox;
     themes->setObjectName("trayTheme");
-    themes->addItems({QStringLiteral("跟随系统"), QStringLiteral("浅色图标（深色面板）"), QStringLiteral("深色图标（浅色面板）")});
+    themes->addItems({T("跟随系统"), T("浅色图标（深色面板）"), T("深色图标（浅色面板）")});
     themes->setCurrentIndex(d->trayTheme);
     d->themeCombo = themes;
-    form->addRow(QStringLiteral("托盘图标"), themes);
+    form->addRow(T("托盘图标"), themes);
     auto *largeText = new ToggleSwitch; largeText->setObjectName("trayLargeText");
     largeText->setChecked(d->largeTrayText);
     d->largeTextCheck = largeText;
-    form->addRow(QStringLiteral("托盘使用大字（2K 屏幕）"), largeText);
+    form->addRow(T("托盘使用大字（2K 屏幕）"), largeText);
     auto *autostart = new ToggleSwitch; autostart->setObjectName("autoStart");
     autostart->setChecked(d->autoStart);
     d->autoStartCheck = autostart;
-    form->addRow(QStringLiteral("登录后启动 DevStats"), autostart);
+    form->addRow(T("登录后启动 DevStats"), autostart);
     auto *notify = new ToggleSwitch; notify->setObjectName("automationNotifications");
     notify->setChecked(d->automationNotifications);
     d->notificationCheck = notify;
-    form->addRow(QStringLiteral("自动查杀时显示通知"), notify);
+    form->addRow(T("自动查杀时显示通知"), notify);
     layout->addLayout(form);
     layout->addWidget(DevStatsUI::separator());
-    layout->addWidget(label(QStringLiteral("快捷应用"), "strong"));
+    layout->addWidget(label(T("快捷应用"), "strong"));
     auto *apps = new QListWidget; apps->setObjectName("customApps"); apps->setMinimumHeight(72);
     d->appsList = apps;
     layout->addWidget(apps, 1);
     for (const auto &path : d->customApps) { auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), apps); item->setData(Qt::UserRole, path); item->setToolTip(DevStatsUI::literal(path)); }
     auto *tools = new QHBoxLayout;
-    auto *add = new QPushButton(QStringLiteral("添加应用…"));
-    auto *remove = new QPushButton(QStringLiteral("移除选中项"));
+    auto *add = new QPushButton(T("添加应用…"));
+    auto *remove = new QPushButton(T("移除选中项"));
     tools->addWidget(add); tools->addWidget(remove); tools->addStretch();
     layout->addLayout(tools);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-    buttons->button(QDialogButtonBox::Close)->setText(QStringLiteral("关闭"));
-    layout->addWidget(buttons);
+    buttons->button(QDialogButtonBox::Close)->setText(T("关闭"));
+    // Which version is in use, beside the button that closes the dialog.
+    auto *footer = new QHBoxLayout;
+    auto *version = label(T("版本 %1").arg(QStringLiteral(DEVSTATS_VERSION)), "muted", "versionLabel");
+    version->setWordWrap(false); version->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    footer->addWidget(version); footer->addStretch(); footer->addWidget(buttons);
+    layout->addLayout(footer);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
     connect(largeText, &ToggleSwitch::toggled, this, [this](bool enabled) { d->largeTrayText = enabled; emit largeTrayTextRequested(enabled); });
     connect(notify, &ToggleSwitch::toggled, this, [this](bool enabled) { d->automationNotifications = enabled; emit automationNotificationsRequested(enabled); });
     connect(autostart, &ToggleSwitch::toggled, this, &MonitorWindow::autoStartRequested);
     connect(themes, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MonitorWindow::trayThemeRequested);
     connect(appearance, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int mode) { setAppearance(mode); emit appearanceRequested(mode); });
+    connect(language, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int mode) { d->language = mode; emit languageRequested(mode); });
     connect(add, &QPushButton::clicked, this, [this] { emit quickLaunchRequested("add"); });
     connect(remove, &QPushButton::clicked, this, [this, apps] { if (auto *item = apps->currentItem()) emit quickLaunchRequested("remove:" + item->data(Qt::UserRole).toString()); });
     dialog->show();

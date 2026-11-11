@@ -1,4 +1,5 @@
 #include "process_network_sampler.h"
+#include "i18n.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -236,7 +237,7 @@ QJsonObject ProcessNetworkSampler::sample(const QJsonObject &freshSnapshot) {
     if (procRoot_ == QStringLiteral("/proc")) dump = collect(deadline);
     else {
         dump.available = dump.complete = false;
-        dump.issues << QStringLiteral("自定义进程目录不与当前主机的 TCP 连接混合采样。");
+        dump.issues << T("自定义进程目录不与当前主机的 TCP 连接混合采样。");
     }
     return sampleDump(freshSnapshot, dump, now, QDateTime::currentSecsSinceEpoch(), deadline);
 }
@@ -244,10 +245,10 @@ QJsonObject ProcessNetworkSampler::sample(const QJsonObject &freshSnapshot) {
 QJsonObject ProcessNetworkSampler::sampleDump(const QJsonObject &snapshot, const Dump &dump,
                                               double now, qint64 sampledAt, double deadline) {
     QStringList coverage {
-        QStringLiteral("当前用户的 IPv4/IPv6 TCP：下载为已接收的 TCP 载荷，上传为 TCP 已确认字节，均非网卡线速。"),
-        QStringLiteral("不含 UDP/QUIC、回环地址和其他用户；代理/VPN 流量可能归属于代理应用。"),
-        QStringLiteral("仅比较两次采样都存在的连接；短连接、退出连接或退出进程可能漏计，不能与接口总量对齐。"),
-        QStringLiteral("同应用共享连接仅计一次；共享进程或跨应用共享连接不强行分摊。")
+        T("当前用户的 IPv4/IPv6 TCP：下载为已接收的 TCP 载荷，上传为 TCP 已确认字节，均非网卡线速。"),
+        T("不含 UDP/QUIC、回环地址和其他用户；代理/VPN 流量可能归属于代理应用。"),
+        T("仅比较两次采样都存在的连接；短连接、退出连接或退出进程可能漏计，不能与接口总量对齐。"),
+        T("同应用共享连接仅计一次；共享进程或跨应用共享连接不强行分摊。")
     };
     coverage.append(dump.issues);
     const double interval = previousTime_ >= 0 && now > previousTime_ ? now - previousTime_ : 0;
@@ -258,7 +259,7 @@ QJsonObject ProcessNetworkSampler::sampleDump(const QJsonObject &snapshot, const
     if (!dump.available) { reset(); result["state"] = "unavailable"; return result; }
     if (snapshot.contains("processesFresh") && !snapshot.value("processesFresh").toBool()) {
         reset(); result["state"] = "partial";
-        coverage << QStringLiteral("本轮进程快照未刷新，无法安全归属连接。");
+        coverage << T("本轮进程快照未刷新，无法安全归属连接。");
         result["coverage"] = QJsonArray::fromStringList(coverage); return result;
     }
     struct Process {
@@ -458,9 +459,9 @@ QJsonObject ProcessNetworkSampler::sampleDump(const QJsonObject &snapshot, const
     std::sort(output.begin(), output.end(), ranked(QStringLiteral("uploadBytesPerSecond"), QStringLiteral("downloadBytesPerSecond")));
     appendLeaders(); // Union of both directions' leaders; at most 60 rows.
     if (applications.size() < output.size()) { limited = true; anyPartial = true; }
-    if (limited) coverage << QStringLiteral("已达到本轮时间、进程、文件描述符或展示数量上限，结果仅覆盖已测部分。");
-    if (unreadable) coverage << QStringLiteral("部分进程已退出、身份改变或权限受限，无法完整读取其连接归属。");
-    if (unattributed) coverage << QStringLiteral("部分当前用户 TCP 连接无法安全归属到可读取的应用。");
+    if (limited) coverage << T("已达到本轮时间、进程、文件描述符或展示数量上限，结果仅覆盖已测部分。");
+    if (unreadable) coverage << T("部分进程已退出、身份改变或权限受限，无法完整读取其连接归属。");
+    if (unattributed) coverage << T("部分当前用户 TCP 连接无法安全归属到可读取的应用。");
     result["state"] = (!dump.complete || !scanComplete || limited) ? "partial" :
         (interval <= 0 ? "starting" : (anyPartial ? "partial" : "ready"));
     result["applications"] = applications; result["coverage"] = QJsonArray::fromStringList(coverage);

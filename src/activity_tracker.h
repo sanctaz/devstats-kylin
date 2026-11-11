@@ -33,5 +33,6 @@ private:
     QHash<QString, Desktop> desktops_;
     QStringList directories_;
     double metadataTime_ = -1, previousTime_ = -1, windowStart_ = -1;
+    bool metadataEnglish_ = false;
     void refreshMetadata(double now);
 };

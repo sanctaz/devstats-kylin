@@ -10,6 +10,9 @@ A test that #includes a production .cpp (to reach private helpers) replaces that
 
 Suites that need a real X server run only with --display, and the window-closing
 ones only natively: under qemu their target's /proc/PID/exe is qemu itself.
+
+The first suite, i18n_catalog, builds nothing: it runs scripts/check-i18n.py, which
+keeps the English catalog in step with the interface text in the source.
 """
 import argparse
 import hashlib
@@ -30,7 +33,7 @@ parser.add_argument('--sdk', type=Path, required=True)
 parser.add_argument('--native-runtime', type=Path, help='Private native Qt libraries and plugins (native mode)')
 parser.add_argument('--timeout', type=int, default=300)
 parser.add_argument('--display', help='X display for suites that need a real X server; without it they are skipped')
-parser.add_argument('suites', nargs='*', help='Default: every tests/test_*.cpp')
+parser.add_argument('suites', nargs='*', help='Default: i18n_catalog and every tests/test_*.cpp')
 args = parser.parse_args()
 
 source = Path(__file__).resolve().parents[1]
@@ -66,9 +69,16 @@ x11_library = sdk / 'sysroot/usr/lib/aarch64-linux-gnu/libX11.so' if args.mode =
 objects = [p for p in sorted(build.glob('*.o')) if p.name != 'main.o']
 assert objects, 'Build the production project first'
 newest = max(p.stat().st_mtime for p in objects)
-suites = args.suites or sorted(p.stem[len('test_'):] for p in (source / 'tests').glob('test_*.cpp'))
+catalog_check = 'i18n_catalog'
+suites = args.suites or [catalog_check] + sorted(p.stem[len('test_'):] for p in (source / 'tests').glob('test_*.cpp'))
 results = []
 for suite in suites:
+    if suite == catalog_check:
+        done = subprocess.run([sys.executable, str(source / 'scripts/check-i18n.py')], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        results.append(dict(suite=suite, result='PASS' if done.returncode == 0 else 'FAIL', code=done.returncode,
+                            logSha256=hashlib.sha256(done.stdout).hexdigest(), last=done.stdout.decode(errors='replace').splitlines()[-3:]))
+        print(json.dumps(results[-1], ensure_ascii=False), flush=True)
+        continue
     cpp = source / 'tests' / f'test_{suite}.cpp'
     assert cpp.exists(), suite
     log = work / f'{suite}-build.log'
@@ -100,7 +110,8 @@ for suite in suites:
              k not in ['LD_LIBRARY_PATH', 'LD_PRELOAD', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_PLATFORMTHEME', 'QML2_IMPORT_PATH', 'DISPLAY']}
     target = dict(QT_QPA_PLATFORM='xcb' if suite in needs_display else 'offscreen', FONTCONFIG_FILE=str(fonts), XDG_RUNTIME_DIR=str(root / 'runtime'),
                   XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'),
-                  DEVSTATS_DATA_DIR=str(root / 'data/devstats'), DEVSTATS_DISABLE_PROBES='1', DEVSTATS_TEST_EVIDENCE=str(root / 'evidence'), TZ='Asia/Shanghai')
+                  DEVSTATS_DATA_DIR=str(root / 'data/devstats'), DEVSTATS_DISABLE_PROBES='1', DEVSTATS_TEST_EVIDENCE=str(root / 'evidence'), TZ='Asia/Shanghai',
+                  LANG='zh_CN.UTF-8', LANGUAGE='zh_CN:zh')
     if suite in needs_display:
         target['DISPLAY'] = args.display
     if args.mode == 'arm':

@@ -1,4 +1,5 @@
 #include "charts.h"
+#include "i18n.h"
 #include "history_feed.h"
 #include "ui_theme.h"
 #include <QPainter>
@@ -87,7 +88,7 @@ HistoryChart::HistoryChart(Unit unit, QWidget *parent) : QWidget(parent), unit_(
     setMinimumHeight(132);
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setAccessibleName(QString::fromUtf8("历史趋势"));
+    setAccessibleName(T("历史趋势"));
 }
 
 void HistoryChart::setCompact(bool compact) {
@@ -106,8 +107,8 @@ void HistoryChart::resizeEvent(QResizeEvent *event) {
 QString HistoryChart::format(double value) const {
     if (unit_ == Unit::Percent) return formatPercent(value);
     if (unit_ == Unit::BytesPerSecond) return formatBytes(value, true);
-    return value >= 1000 ? QString::number(value / 1000, 'f', 1) + QStringLiteral(" 秒")
-                         : QString::number(value, 'f', 0) + QStringLiteral(" 毫秒");
+    return value >= 1000 ? T("%1 秒").arg(QString::number(value / 1000, 'f', 1))
+                         : T("%1 毫秒").arg(QString::number(value, 'f', 0));
 }
 
 HistoryChart::Point HistoryChart::parse(const QJsonValue &entry) {
@@ -211,8 +212,8 @@ void HistoryChart::rebuild() {
         hasPrevious = true;
         missing = false;
     }
-    setAccessibleDescription(hasLatest_ ? QString::fromUtf8("末次采样 ") + format(latest_.value)
-        : QString::fromUtf8("此时间段尚无记录"));
+    setAccessibleDescription(hasLatest_ ? T("末次采样 %1").arg(format(latest_.value))
+        : T("此时间段尚无记录"));
     update();
 }
 
@@ -307,8 +308,8 @@ void HistoryChart::paintEvent(QPaintEvent *) {
     const QString stamp = hovered_ >= 0 ? QDateTime::fromSecsSinceEpoch(points_[hovered_].at).toString(
         end_ - start_ >= 86400 ? QStringLiteral("MM-dd hh:mm") : QStringLiteral("hh:mm:ss")) : scale;
     const QString detail = hovered_ >= 0
-        ? (points_[hovered_].aggregate ? QString::fromUtf8("均值 ") : QString()) + format(points_[hovered_].value)
-        : hasLatest_ ? (latest_.aggregate ? QString::fromUtf8("末次均值 ") : QString::fromUtf8("末次 ")) + format(latest_.value)
+        ? (points_[hovered_].aggregate ? T("均值 ") : QString()) + format(points_[hovered_].value)
+        : hasLatest_ ? (latest_.aggregate ? T("末次均值 ") : T("末次 ")) + format(latest_.value)
         : QString::fromUtf8("—");
     const qreal detailWidth = std::min(plot.width() * .58, painter.fontMetrics().horizontalAdvance(detail) + 2.);
     painter.drawText(QRectF(plot.left(), 0, std::max(0., plot.width() - detailWidth - 12), 20),
@@ -324,7 +325,7 @@ void HistoryChart::paintEvent(QPaintEvent *) {
         QDateTime::fromSecsSinceEpoch(end_).toString(dateFormat));
     if (points_.isEmpty()) {
         painter.setPen(colors.secondary);
-        painter.drawText(plot, Qt::AlignCenter, QString::fromUtf8("此时间段尚无记录"));
+        painter.drawText(plot, Qt::AlignCenter, T("此时间段尚无记录"));
     }
 }
 
@@ -347,8 +348,7 @@ void HistoryChart::mouseMoveEvent(QMouseEvent *event) {
     if (selected < 0) { QToolTip::hideText(); return; }
     const auto &point = points_[selected];
     QString detail = format(point.value);
-    if (point.aggregate) detail = QString::fromUtf8("均值 ") + detail + QString::fromUtf8("\n范围 ")
-        + format(point.minimum) + QStringLiteral(" – ") + format(point.maximum);
+    if (point.aggregate) detail = T("均值 %1\n范围 %2 – %3").arg(detail, format(point.minimum), format(point.maximum));
     QToolTip::showText(event->globalPos(), QDateTime::fromSecsSinceEpoch(point.at).toString("MM-dd hh:mm:ss")
         + QStringLiteral("\n") + detail, this);
 }

@@ -4,5 +4,6 @@
         <file>chevron-dark@2x.png</file>
         <file>chevron-light.png</file>
         <file>chevron-light@2x.png</file>
+        <file>i18n-en.json</file>
     </qresource>
 </RCC>

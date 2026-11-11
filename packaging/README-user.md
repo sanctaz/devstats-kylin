@@ -5,11 +5,13 @@
 开发包，不执行 apt、sudo，不修改系统 Qt 或系统目录。它仍然依赖 Linux / glibc、
 图形会话、系统字体以及与目标显卡匹配的驱动，不能视为全静态或零系统依赖程序。
 
+English: [README-user.en.md](README-user.en.md).
+
 ## 解压即用
 
 ```sh
-tar -xzf devstats-0.8.6-linux-arm64-user.tar.gz
-cd devstats-0.8.6-linux-arm64-user
+tar -xzf devstats-1.0.0-linux-arm64-user.tar.gz
+cd devstats-1.0.0-linux-arm64-user
 ./devstats --show
 ```
 
@@ -23,7 +25,7 @@ cd devstats-0.8.6-linux-arm64-user
 ./install-user.sh
 ```
 
-默认安装目录为 `~/.local/opt/devstats-0.8.6`；命令入口为
+默认安装目录为 `~/.local/opt/devstats-1.0.0`；命令入口为
 `~/.local/bin/devstats`；菜单入口和图标位于
 `${XDG_DATA_HOME:-~/.local/share}/applications` 和 `icons/hicolor/scalable/apps`。
 安装器拒绝 root，也不会替你开启登录启动。默认数据位于当前用户的 XDG 数据目录，
@@ -36,12 +38,19 @@ cd devstats-0.8.6-linux-arm64-user
 同版本内容不同或已修改时，使用新的空目录，不覆盖原文件。自定义位置示例：
 
 ```sh
-DEVSTATS_USER_INSTALL_DIR="$HOME/应用/DevStats 0.8.6" \
+DEVSTATS_USER_INSTALL_DIR="$HOME/应用/DevStats 1.0.0" \
 DEVSTATS_USER_BIN_DIR="$HOME/.local/bin" ./install-user.sh
 ```
 
 路径必须为绝对路径且不含换行。目录支持空格、中文及 shell 特殊字符。
 如果 `.local/bin` 尚不在 PATH，可通过完整路径启动。安装器不会修改 shell 配置。
+
+## 界面语言
+
+界面有简体中文和英文两种。默认跟随系统：系统语言是中文（按 `LC_ALL`、`LC_MESSAGES`、
+`LANG` 和 `LANGUAGE` 的第一项判断）显示中文，其他语言显示英文。打开设置（窗口右上角的
+齿轮，或 Ctrl+,），在 **语言** 里选择跟随系统、中文或 English，改完立即生效。
+切换之前已经保存的卡顿记录和执行记录，保持保存时的文字。
 
 ## 一次卸载所有已识别的用户版本，保留全部数据
 
@@ -141,7 +150,7 @@ https://doc.qt.io/qt-6/deployment-plugins.html 。
 
 ## 显式安装范围
 
-需要把程序和入口都放入一个指定目录时，可执行 `./install-user.sh --prefix /绝对路径/DevStats`；版本目录为 `opt/devstats-0.8.6`，入口为 `bin/devstats`。卸载用 `./uninstall-user.sh --prefix /绝对路径/DevStats`，只检查这个前缀下的已验证安装，不扫描默认 HOME 目录；设置、历史、任务和缓存仍保留。前缀必须是无符号链接的规范绝对路径，不能为空或根目录。
+需要把程序和入口都放入一个指定目录时，可执行 `./install-user.sh --prefix /绝对路径/DevStats`；版本目录为 `opt/devstats-1.0.0`，入口为 `bin/devstats`。卸载用 `./uninstall-user.sh --prefix /绝对路径/DevStats`，只检查这个前缀下的已验证安装，不扫描默认 HOME 目录；设置、历史、任务和缓存仍保留。前缀必须是无符号链接的规范绝对路径，不能为空或根目录。
 
 ## 卡顿诊断
 

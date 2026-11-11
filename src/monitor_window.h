@@ -21,7 +21,11 @@ public:
     QString selectedModule() const;
     qint64 historyDuration() const;
     void setPreferences(bool autoStart, int trayTheme, const QStringList &manualProjects,
-                        const QStringList &customApps, bool largeTrayText = true, bool automationNotifications = true);
+                        const QStringList &customApps, bool largeTrayText = true, bool automationNotifications = true,
+                        int language = 0);
+    // Opens the settings dialog, or brings it forward.
+    void showSettings();
+    bool settingsVisible() const;
     void setAppearance(int mode);
     QJsonObject diagnosticReport() const;
     void setDiagnosticFeedback(const QString &message);
@@ -43,6 +47,8 @@ signals:
     void largeTrayTextRequested(bool enabled);
     void automationNotificationsRequested(bool enabled);
     void appearanceRequested(int mode);
+    // 0 follows the system, 1 Chinese, 2 English.
+    void languageRequested(int mode);
     void quickLaunchRequested(QString application);
     void diagnosticRunRequested(bool start);
     void processActionRequested(QJsonObject identity, QString action);
@@ -64,5 +70,4 @@ private:
     void renderCurrentHistories();
     void publishVisibility(bool visible);
     void publishNetworkObservation();
-    void showSettings();
 };

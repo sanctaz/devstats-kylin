@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "i18n.h"
 #include "tray_icon.h"
 #include "linux_sampler.h"
 #include "process_network_sampler.h"
@@ -56,8 +57,7 @@ QJsonObject livePoint(const QPair<qint64, double> &point) {
         {"minimum", point.second}, {"maximum", point.second}, {"count", 1}, {"resolutionSeconds", 2}};
 }
 const QStringList metricKeys = {"cpu", "memory", "network", "battery", "disk"};
-const QStringList metricTitles = {QString::fromUtf8("CPU"), QString::fromUtf8("内存"),
-    QString::fromUtf8("网络"), QString::fromUtf8("电池"), QString::fromUtf8("磁盘")};
+QStringList metricTitles() { return {QStringLiteral("CPU"), T("内存"), T("网络"), T("电池"), T("磁盘")}; }
 bool identitiesCurrent(const QJsonObject &snapshot, const QJsonArray &identities) {
     if (identities.isEmpty() || identities.size()>64 || snapshot.value("processSampleAgeSeconds").toDouble(999)>5 ||
         std::abs(QDateTime::currentMSecsSinceEpoch()/1000.-snapshot.value("timestamp").toDouble())>6) return false;
@@ -87,7 +87,7 @@ void MonitorWorker::start() {
                                     qEnvironmentVariable("DEVSTATS_SYS_ROOT", "/sys")));
     sampler_->setProjectRoots(projects_);
     processNetwork_.reset(new ProcessNetworkSampler(qEnvironmentVariable("DEVSTATS_PROC_ROOT", "/proc")));
-    cachedNetwork_ = inactiveNetwork(QStringLiteral("仅在网络页可见时采集应用流量。"));
+    cachedNetwork_ = inactiveNetwork(T("仅在网络页可见时采集应用流量。"));
     history_.reset(new HistoryStore(root_));
     history_->open();
     incidents_.reset(new IncidentRecorder(root_));
@@ -115,7 +115,7 @@ void MonitorWorker::stop() {
     stopped_ = true;
     if (processNetwork_) processNetwork_->reset();
     processNetwork_.reset();
-    cachedNetwork_ = inactiveNetwork(QStringLiteral("监控已停止。"));
+    cachedNetwork_ = inactiveNetwork(T("监控已停止。"));
     cancelApplicationClose(QString());
     if (timer_) { timer_->stop(); delete timer_; timer_ = nullptr; }
     probe_.reset();
@@ -125,7 +125,7 @@ void MonitorWorker::stop() {
     applicationActions_.reset();
     processRules_.reset();
     pendingApplicationPlan_ = {};
-    if(reliefBusy_) publishRelief({{"ok",false},{"message",QStringLiteral("监控已停止，后续内存观测中断。")}});
+    if(reliefBusy_) publishRelief({{"ok",false},{"message",T("监控已停止，后续内存观测中断。")}});
     sampler_.reset();
 }
 
@@ -152,7 +152,7 @@ void MonitorWorker::setNetworkObservation(bool enabled) {
     if (networkObservation_ == enabled) return;
     networkObservation_ = enabled;
     if (processNetwork_) processNetwork_->reset();
-    cachedNetwork_ = inactiveNetwork(enabled ? QStringLiteral("正在等待网络采样。") : QStringLiteral("网络页已隐藏，应用流量采样暂停。"));
+    cachedNetwork_ = inactiveNetwork(enabled ? T("正在等待网络采样。") : T("网络页已隐藏，应用流量采样暂停。"));
     if (enabled && !stopped_ && !sleeping_ && processNetwork_) {
         // Showing the window may have just obtained fresh process metadata.
         // Reuse that scan for the first TCP baseline instead of scanning twice.
@@ -251,14 +251,14 @@ void MonitorWorker::requestIncident(QString id) {
     if (!incidents_) return;
     auto result = incidents_->detail(id);
     if (result.isEmpty()) result = QJsonObject{{"id", id}, {"error", incidents_->error().isEmpty()
-        ? QStringLiteral("事件已超出保留范围，或记录不存在。") : incidents_->error()}};
+        ? T("事件已超出保留范围，或记录不存在。") : incidents_->error()}};
     emit incidentDetailReady(result);
 }
 
 void MonitorWorker::exportIncident(QString id) {
     if (!incidents_) return;
     const auto result = incidents_->detail(id);
-    if (result.isEmpty()) emit actionFinished(incidents_->error().isEmpty() ? QStringLiteral("事件记录不存在，未导出。") : incidents_->error());
+    if (result.isEmpty()) emit actionFinished(incidents_->error().isEmpty() ? T("事件记录不存在，未导出。") : incidents_->error());
     else emit incidentExportReady(result);
 }
 
@@ -275,7 +275,7 @@ void MonitorWorker::beginReliefObservation(QJsonObject result, const QJsonArray 
     reliefResult_ = result; reliefIdentities_ = identities;
     reliefObservationAt_ = clock_.elapsed();
     result["phase"] = "awaitingObservation";
-    result["message"] = result.value("message").toString()+QStringLiteral(" 正在利用后续采样观察内存变化…");
+    result["message"] = T("%1 正在利用后续采样观察内存变化…").arg(result.value("message").toString());
     emit reliefOutcomeReady(DevStatsRelief::outcome(reliefBefore_, {}, identities, result));
 }
 
@@ -288,9 +288,9 @@ void MonitorWorker::observeRelief() {
 }
 
 void MonitorWorker::reclaimMemoryForRelief() {
-    if (reliefBusy_) { emit actionFinished(QStringLiteral("正在处理其他减压操作，请等待结果。")); return; }
+    if (reliefBusy_) { emit actionFinished(T("正在处理其他减压操作，请等待结果。")); return; }
     if (!memoryOptimizer_ || stopped_ || sleeping_) {
-        publishRelief({{"action","self"},{"ok",false},{"message",QStringLiteral("监控未运行，未执行回收。")}}); return;
+        publishRelief({{"action","self"},{"ok",false},{"message",T("监控未运行，未执行回收。")}}); return;
     }
     reliefBusy_=true; emit reliefBusyChanged(true);
     reliefBefore_=DevStatsRelief::baseline(latest_,{});
@@ -300,14 +300,14 @@ void MonitorWorker::reclaimMemoryForRelief() {
 }
 
 void MonitorWorker::inspectApplicationWindows(QJsonArray identities, QStringList names) {
-    if(reliefBusy_) {emit actionFinished(QStringLiteral("正在处理其他减压操作，请等待结果。"));return;}
+    if(reliefBusy_) {emit actionFinished(T("正在处理其他减压操作，请等待结果。"));return;}
     if(stopped_ || sleeping_ || !applicationActions_) {
-        publishRelief({{"action","applications"},{"ok",false},{"message",QStringLiteral("监控未运行，请恢复后重试。")}});return;
+        publishRelief({{"action","applications"},{"ok",false},{"message",T("监控未运行，请恢复后重试。")}});return;
     }
     reliefBusy_=true;emit reliefBusyChanged(true);
     refreshDiagnostics();
     if(!identitiesCurrent(latest_,identities)) {
-        publishRelief({{"action","applications"},{"ok",false},{"message",QStringLiteral("应用进程已变化或超过64个，请刷新后重新选择。")}});return;
+        publishRelief({{"action","applications"},{"ok",false},{"message",T("应用进程已变化或超过64个，请刷新后重新选择。")}});return;
     }
     const auto inspected=applicationActions_->inspect(identities);
     if(!inspected.value("canClose").toBool()) {
@@ -327,14 +327,14 @@ void MonitorWorker::cancelApplicationClose(QString planId) {
     pendingApplicationPlan_={}; reliefPlanAt_=-1;
     applicationActions_.reset(new ApplicationActions());
     publishRelief({{"action","applications"},{"ok",false},{"phase","cancelled"},
-        {"message",QStringLiteral("已取消正常关窗请求，未发送关闭消息。")}});
+        {"message",T("已取消正常关窗请求，未发送关闭消息。")}});
 }
 
 void MonitorWorker::closeApplicationWindows(QString planId) {
     if(pendingApplicationPlan_.isEmpty() || pendingApplicationPlan_.value("planId").toString()!=planId) return;
     const auto plan=pendingApplicationPlan_; pendingApplicationPlan_={};
     if(stopped_ || sleeping_ || !applicationActions_ || clock_.elapsed()-reliefPlanAt_>60000) {
-        publishRelief({{"action","applications"},{"ok",false},{"message",QStringLiteral("确认已过期或监控暂停，请刷新后重新确认。")}});return;
+        publishRelief({{"action","applications"},{"ok",false},{"message",T("确认已过期或监控暂停，请刷新后重新确认。")}});return;
     }
     const auto identities=plan.value("identities").toArray();
     reliefBefore_=DevStatsRelief::baseline(latest_,identities);
@@ -351,7 +351,7 @@ void MonitorWorker::setSleeping(bool sleeping) {
     sleeping_ = sleeping;
     if (sleeping) {
         if (processNetwork_) processNetwork_->reset();
-        cachedNetwork_ = inactiveNetwork(QStringLiteral("系统休眠，应用流量采样暂停。"));
+        cachedNetwork_ = inactiveNetwork(T("系统休眠，应用流量采样暂停。"));
         updateNetworkPresentation();
         finishDiagnostics(QStringLiteral("interrupted"));
         cancelApplicationClose(QString());
@@ -361,7 +361,7 @@ void MonitorWorker::setSleeping(bool sleeping) {
         incidents_->resetObservation();
         incidentsDirty_ = true;
         memoryOptimizer_->resetObservation();
-        if(reliefBusy_) publishRelief({{"ok",false},{"message",QStringLiteral("系统进入休眠，后续内存观测中断。")}});
+        if(reliefBusy_) publishRelief({{"ok",false},{"message",T("系统进入休眠，后续内存观测中断。")}});
         if (networkObservation_ && !latest_.isEmpty()) emit snapshotReady(latest_);
     } else {
         sampler_.reset(new LinuxSampler(qEnvironmentVariable("DEVSTATS_PROC_ROOT", "/proc"),
@@ -505,8 +505,15 @@ void MonitorWorker::publishHistory(const QJsonObject &sampled) {
     emit historyReady(result, start, end);
 }
 
+int AppController::storedLanguage() {
+    return qBound(0, QSettings(configFile(), QSettings::IniFormat).value("language", 0).toInt(), 2);
+}
+
 AppController::AppController(QObject *parent)
     : QObject(parent), settings_(configFile(), QSettings::IniFormat) {
+    // Before anything is worded: the menu below and the worker's first diagnosis.
+    language_ = qBound(0, settings_.value("language", 0).toInt(), 2);
+    DevStatsLanguage::apply(language_);
     windowReleaseTimer_ = new QTimer(this);
     windowReleaseTimer_->setObjectName("windowReleaseTimer");
     windowReleaseTimer_->setSingleShot(true); windowReleaseTimer_->setInterval(30000);
@@ -556,7 +563,7 @@ AppController::AppController(QObject *parent)
     });
     connect(worker_, &MonitorWorker::incidentsReady, this, [this](const QJsonArray &incidents, const QString &error) {
         if (!error.isEmpty()) {
-            if (window_) window_->setDiagnosticFeedback(QStringLiteral("事件记录：%1").arg(error));
+            if (window_) window_->setDiagnosticFeedback(T("事件记录：%1").arg(error));
             return;
         }
         incidents_ = incidents;
@@ -567,7 +574,7 @@ AppController::AppController(QObject *parent)
     });
     connect(worker_, &MonitorWorker::incidentExportReady, this, [this](const QJsonObject &incident) {
         if (!window_) return;
-        saveReport(DevStatsReport::incidentHtml(incident), QStringLiteral("导出卡顿记录（HTML，含当时的应用名、PID 和资源指标）"), "DevStats-incident-");
+        saveReport(DevStatsReport::incidentHtml(incident), T("导出卡顿记录（HTML，含当时的应用名、PID 和资源指标）"), "DevStats-incident-");
     });
     connect(worker_, &MonitorWorker::reliefBusyChanged, this, [this](bool busy) {
         reliefBusy_=busy;
@@ -580,8 +587,8 @@ AppController::AppController(QObject *parent)
             settings_.setValue("automationRules", QJsonDocument(automationRules_).toJson(QJsonDocument::Compact));
             settings_.sync();
             if (settings_.status() != QSettings::NoError) {
-                result["message"] = QStringLiteral("规则已在本次运行生效，但设置文件保存失败；请检查个人配置目录的写入权限。");
-            } else result["message"] = automationEnabled_ ? QStringLiteral("已保存，规则已生效。") : QStringLiteral("已保存。自动查杀目前处于暂停。");
+                result["message"] = T("规则已在本次运行生效，但设置文件保存失败；请检查个人配置目录的写入权限。");
+            } else result["message"] = automationEnabled_ ? T("已保存，规则已生效。") : T("已保存。自动查杀目前处于暂停。");
         }
         if (window_) window_->rulesPanel()->configurationFinished(result);
     });
@@ -601,38 +608,42 @@ AppController::AppController(QObject *parent)
         QStringList details;for(const auto &v:plan.value("windows").toArray()) {
             const auto w=v.toObject();details.append(QStringLiteral("PID %1 · %2").arg(QString::number(w.value("pid").toDouble(),'f',0),w.value("title").toString()));
         }
-        QMessageBox confirm(QMessageBox::Warning,QStringLiteral("正常关闭所选应用窗口"),QString(),QMessageBox::Cancel,reliefDialog_);
+        QMessageBox confirm(QMessageBox::Warning,T("正常关闭所选应用窗口"),QString(),QMessageBox::Cancel,reliefDialog_);
         confirm.setObjectName("confirmMemoryReliefApplications");confirm.setTextFormat(Qt::PlainText);
-        confirm.setText(QStringLiteral("将请求正常关闭 %1 个已确认窗口：\n%2\n\n应用可以弹出保存询问，也可能保留后台进程。请先保存工作；窗口关闭不代表整个应用已退出，实际内存变化将在之后采样观察。")
-            .arg(plan.value("windowCount").toInt()).arg(names.mid(0,8).join(QStringLiteral("、"))));
+        confirm.setText(T("将请求正常关闭 %1 个已确认窗口：\n%2\n\n应用可以弹出保存询问，也可能保留后台进程。请先保存工作；窗口关闭不代表整个应用已退出，实际内存变化将在之后采样观察。")
+            .arg(plan.value("windowCount").toInt()).arg(names.mid(0,8).join(T("、"))));
         confirm.setDetailedText(details.join('\n'));
-        auto *proceed=confirm.addButton(QStringLiteral("请求正常关闭窗口"),QMessageBox::AcceptRole);confirm.setDefaultButton(QMessageBox::Cancel);
+        auto *proceed=confirm.addButton(T("请求正常关闭窗口"),QMessageBox::AcceptRole);confirm.setDefaultButton(QMessageBox::Cancel);
         confirm.exec();
         const char *slot=confirm.clickedButton()==proceed?"closeApplicationWindows":"cancelApplicationClose";
         QMetaObject::invokeMethod(worker_,slot,Qt::QueuedConnection,Q_ARG(QString,id));
     });
     QDBusConnection::systemBus().connect("org.freedesktop.login1", "/org/freedesktop/login1",
         "org.freedesktop.login1.Manager", "PrepareForSleep", worker_, SLOT(setSleeping(bool)));
+    // The wording is set by retranslateMenu(), again whenever the language changes.
     menu_ = new QMenu();
-    auto *open = menu_->addAction(QString::fromUtf8("打开 DevStats"));
+    auto *open = menu_->addAction(QString());
+    open->setObjectName("openAction");
     connect(open, &QAction::triggered, this, [this] { showModule(); });
-    auto *diagnose = menu_->addAction(QStringLiteral("一键诊断"));
+    auto *diagnose = menu_->addAction(QString());
     diagnose->setObjectName("diagnoseAction");
     connect(diagnose, &QAction::triggered, this, [this] {
         showModule("diagnostics");
         QMetaObject::invokeMethod(worker_, "runDiagnostics", Qt::QueuedConnection);
     });
-    auto *automation = menu_->addAction(QStringLiteral("自动查杀…"));
+    auto *automation = menu_->addAction(QString());
     automation->setObjectName("processAutomationAction");
     connect(automation, &QAction::triggered, this, [this] { showModule("automation"); });
-    auto *relief = menu_->addAction(QStringLiteral("内存减压…"));
+    auto *relief = menu_->addAction(QString());
+    relief->setObjectName("reliefAction");
     connect(relief, &QAction::triggered, this, [this] { showModule("memory"); showMemoryRelief(); });
     menu_->addSeparator();
-    auto *metrics = menu_->addMenu(QString::fromUtf8("托盘显示指标"));
+    auto *metrics = menu_->addMenu(QString());
+    metricsMenu_ = metrics;
     QStringList enabled = settings_.value("trayMetrics", QStringList{"cpu", "memory", "network", "battery"}).toStringList();
     for (int i = 0; i < metricKeys.size(); ++i) {
         const QString key = metricKeys[i];
-        auto *choice = metrics->addAction(metricTitles[i]);
+        auto *choice = metrics->addAction(QString());
         choice->setCheckable(true); choice->setChecked(enabled.contains(key));
         connect(choice, &QAction::toggled, this, [this, key](bool checked) {
             QStringList selected = settings_.value("trayMetrics", QStringList{"cpu", "memory", "network", "battery"}).toStringList();
@@ -654,15 +665,59 @@ AppController::AppController(QObject *parent)
         trays_.append(tray);
     }
     menu_->addSeparator();
-    auto *terminal = menu_->addAction(QString::fromUtf8("打开终端"));
+    auto *terminal = menu_->addAction(QString());
+    terminal->setObjectName("terminalAction");
     connect(terminal, &QAction::triggered, this, [this] { launchApplication("terminal"); });
-    auto *files = menu_->addAction(QString::fromUtf8("打开数据文件夹"));
+    auto *files = menu_->addAction(QString());
+    files->setObjectName("dataFolderAction");
     connect(files, &QAction::triggered, this, [] { QDesktopServices::openUrl(QUrl::fromLocalFile(devStatsDataRoot())); });
     menu_->addSeparator();
-    auto *quit = menu_->addAction(QString::fromUtf8("退出 DevStats"));
+    auto *quit = menu_->addAction(QString());
+    quit->setObjectName("quitAction");
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
     connect(qApp, &QApplication::paletteChanged, this, [this](const QPalette &) { updateTray(); applyMenuTheme(); });
+    retranslateMenu();
     applyMenuTheme();
+}
+
+void AppController::retranslateMenu() {
+    const QList<QPair<const char *, QString>> wording{{"openAction", T("打开 DevStats")}, {"diagnoseAction", T("一键诊断")},
+        {"processAutomationAction", T("自动查杀…")}, {"reliefAction", T("内存减压…")}, {"terminalAction", T("打开终端")},
+        {"dataFolderAction", T("打开数据文件夹")}, {"quitAction", T("退出 DevStats")}};
+    for (const auto &entry : wording)
+        if (auto *action = menu_->findChild<QAction *>(entry.first, Qt::FindDirectChildrenOnly)) action->setText(entry.second);
+    metricsMenu_->setTitle(T("托盘显示指标"));
+    const auto titles = metricTitles();
+    const auto choices = metricsMenu_->actions();
+    for (int i = 0; i < choices.size() && i < titles.size(); ++i) choices[i]->setText(titles[i]);
+}
+
+// Text already on screen keeps the language it was written in, so the window is built
+// again where it stood. Records saved earlier keep the language they were saved in.
+void AppController::setLanguage(int mode) {
+    mode = qBound(0, mode, 2);
+    if (mode == language_) return;
+    language_ = mode;
+    storePreference("language", language_);
+    const bool wasEnglish = DevStatsLanguage::isEnglish();
+    DevStatsLanguage::apply(language_);
+    updatePreferences();
+    if (wasEnglish == DevStatsLanguage::isEnglish()) return;
+    retranslateMenu();
+    updateTray();
+    if (reliefDialog_) delete reliefDialog_.data();
+    if (window_) {
+        const bool shown = window_->isVisible() && !window_->isMinimized();
+        const bool settings = window_->settingsVisible();
+        settings_.setValue("windowGeometry", window_->saveGeometry());
+        delete window_.data();
+        if (shown) {
+            showModule();
+            if (settings) window_->showSettings();
+        }
+    }
+    // The diagnosis in the last sample was worded in the other language.
+    QMetaObject::invokeMethod(worker_, "refreshDiagnostics", Qt::QueuedConnection);
 }
 
 void AppController::applyMenuTheme() {
@@ -688,7 +743,7 @@ void AppController::notifyAutomation() {
         lastNotificationAt_ = now;
         // Notification servers may render the body as markup; a program name must stay text.
         const auto plain = [](QString text) { return text.replace('&', QChar(0xFF06)).replace('<', QChar(0x2039)).replace('>', QChar(0x203A)); };
-        tray->showMessage(QStringLiteral("自动查杀：%1").arg(plain(entry.value("name").toString())),
+        tray->showMessage(T("自动查杀：%1").arg(plain(entry.value("name").toString())),
                           plain(entry.value("condition").toString() + QStringLiteral("\n") + entry.value("message").toString()),
                           QSystemTrayIcon::Information, 6000);
         break;
@@ -749,7 +804,7 @@ void AppController::ensureWindow() {
     window_ = new MonitorWindow(appearance_);
     window_->setAttribute(Qt::WA_DeleteOnClose, false);
     window_->installEventFilter(this);
-    window_->setPreferences(autoStartEnabled(), trayTheme_, projects_, customApps_, largeTrayText_, automationNotifications_);
+    window_->setPreferences(autoStartEnabled(), trayTheme_, projects_, customApps_, largeTrayText_, automationNotifications_, language_);
     window_->setIncidentRecording(incidentRecording_);
     window_->rulesPanel()->setConfiguration(automationEnabled_, automationRules_);
     connect(window_->rulesPanel(), &ProcessRulesPanel::configurationRequested, worker_, &MonitorWorker::setProcessRules);
@@ -777,7 +832,7 @@ void AppController::ensureWindow() {
         QMetaObject::invokeMethod(worker_, "setIncidentRecording", Qt::QueuedConnection, Q_ARG(bool, enabled));
     });
     connect(window_, &MonitorWindow::diagnosticExportRequested, this, [this] {
-        saveReport(DevStatsReport::diagnosisHtml(window_->diagnosticReport()), QStringLiteral("导出诊断报告（HTML，含应用名、PID 和资源指标，不含命令行与项目路径）"), "DevStats-diagnostics-");
+        saveReport(DevStatsReport::diagnosisHtml(window_->diagnosticReport()), T("导出诊断报告（HTML，含应用名、PID 和资源指标，不含命令行与项目路径）"), "DevStats-diagnostics-");
     });
     connect(window_, &MonitorWindow::processActionRequested, this, [this](const QJsonObject &identity, const QString &action) {
         if (action != "terminate" && action != "kill") return;
@@ -790,19 +845,19 @@ void AppController::ensureWindow() {
             return false;
         };
         const auto checked = ProcessActions().inspect(identity);
-        if (!current()) { window_->setDiagnosticFeedback(QStringLiteral("进程已变化，请重新选择。")); return; }
+        if (!current()) { window_->setDiagnosticFeedback(T("进程已变化，请重新选择。")); return; }
         if (!checked.value("canTerminate").toBool()) { window_->setDiagnosticFeedback(checked.value("message").toString()); return; }
         const bool force = action == "kill";
-        QMessageBox confirm(QMessageBox::Warning, force ? QStringLiteral("强制结束此进程") : QStringLiteral("结束此进程"), QString(), QMessageBox::Cancel, window_);
+        QMessageBox confirm(QMessageBox::Warning, force ? T("强制结束此进程") : T("结束此进程"), QString(), QMessageBox::Cancel, window_);
         confirm.setObjectName("confirmDiagnosticProcess");
         confirm.setTextFormat(Qt::PlainText);
-        confirm.setText(QStringLiteral("%1（PID %2）\n%3\n\n%4").arg(identity.value("name").toString(), QString::number(identity.value("pid").toDouble(), 'f', 0), identity.value("executablePath").toString(),
-            force ? QStringLiteral("进程会被立即终止，来不及保存任何内容。") : QStringLiteral("程序会收到结束请求，通常会正常退出。未保存的内容可能丢失。")));
-        auto *proceed = confirm.addButton(force ? QStringLiteral("强制结束") : QStringLiteral("结束进程"), QMessageBox::AcceptRole);
+        confirm.setText(T("%1（PID %2）\n%3\n\n%4").arg(identity.value("name").toString(), QString::number(identity.value("pid").toDouble(), 'f', 0), identity.value("executablePath").toString(),
+            force ? T("进程会被立即终止，来不及保存任何内容。") : T("程序会收到结束请求，通常会正常退出。未保存的内容可能丢失。")));
+        auto *proceed = confirm.addButton(force ? T("强制结束") : T("结束进程"), QMessageBox::AcceptRole);
         confirm.setDefaultButton(QMessageBox::Cancel);
         confirm.exec();
         if (confirm.clickedButton() != proceed) { window_->setDiagnosticFeedback(QString()); return; }
-        if (!current()) { window_->setDiagnosticFeedback(QStringLiteral("进程已变化，未执行。请重新选择。")); return; }
+        if (!current()) { window_->setDiagnosticFeedback(T("进程已变化，未执行。请重新选择。")); return; }
         const auto result = ProcessActions().execute(identity, action);
         window_->setDiagnosticFeedback(result.value("message").toString());
         QMetaObject::invokeMethod(worker_, "refreshDiagnostics", Qt::QueuedConnection);
@@ -827,6 +882,8 @@ void AppController::ensureWindow() {
         appearance_ = qBound(0, mode, 2); storePreference("appearance", appearance_);
         applyMenuTheme();
     });
+    // Queued: the request comes from inside the window that is about to be rebuilt.
+    connect(window_, &MonitorWindow::languageRequested, this, [this](int mode) { setLanguage(mode); }, Qt::QueuedConnection);
     connect(window_, &MonitorWindow::quickLaunchRequested, this, &AppController::launchApplication);
     if (!latest_.isEmpty()) window_->setSnapshot(latest_);
     window_->setIncidents(incidents_);
@@ -856,12 +913,12 @@ void AppController::showMemoryRelief() {
 void AppController::saveReport(const QString &html, const QString &title, const QString &prefix) {
     if (!window_) return;
     QString path = QFileDialog::getSaveFileName(window_, title,
-        QDir::homePath() + "/" + prefix + QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss") + ".html", QStringLiteral("HTML 报告 (*.html)"));
+        QDir::homePath() + "/" + prefix + QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss") + ".html", T("HTML 报告 (*.html)"));
     if (path.isEmpty()) return;
     path = DevStatsReport::htmlPath(path);
     const QString error = DevStatsReport::writePrivate(path, html.toUtf8());
-    window_->setDiagnosticFeedback(error.isEmpty() ? QStringLiteral("报告已保存至 %1，可以用浏览器打开。").arg(path)
-                                                   : QStringLiteral("报告未保存：%1").arg(error));
+    window_->setDiagnosticFeedback(error.isEmpty() ? T("报告已保存至 %1，可以用浏览器打开。").arg(path)
+                                                   : T("报告未保存：%1").arg(error));
 }
 
 void AppController::showModule(const QString &module) {
@@ -886,7 +943,7 @@ void AppController::showModule(const QString &module) {
 }
 
 void AppController::updatePreferences() {
-    if (window_) window_->setPreferences(autoStartEnabled(), trayTheme_, projects_, customApps_, largeTrayText_, automationNotifications_);
+    if (window_) window_->setPreferences(autoStartEnabled(), trayTheme_, projects_, customApps_, largeTrayText_, automationNotifications_, language_);
 }
 
 // A preference that cannot be written comes back as its default after a restart,
@@ -896,7 +953,7 @@ void AppController::storePreference(const QString &key, const QVariant &value) {
     settings_.sync();
     if (settings_.status() == QSettings::NoError || settingsWarningShown_) return;
     settingsWarningShown_ = true;
-    showError(QStringLiteral("设置无法保存到 %1，下次启动会恢复为默认值。请确认这个文件和所在目录属于当前用户并且可写。").arg(settings_.fileName()));
+    showError(T("设置无法保存到 %1，下次启动会恢复为默认值。请确认这个文件和所在目录属于当前用户并且可写。").arg(settings_.fileName()));
 }
 
 void AppController::showError(const QString &message) {
@@ -947,11 +1004,11 @@ bool AppController::autoStartEnabled() {
 void AppController::setAutoStart(bool enabled) {
     const QString path = autostartPath();
     if (enabled) {
-        if (!QDir().mkpath(QFileInfo(path).path())) { showError(QString::fromUtf8("无法创建登录启动目录。")); return; }
+        if (!QDir().mkpath(QFileInfo(path).path())) { showError(T("无法创建登录启动目录。")); return; }
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly)) { showError(file.errorString()); return; }
         const QString executable = devStatsLauncherPath();
-        if (executable.contains('\n') || executable.contains('\r')) { showError(QString::fromUtf8("应用路径含无效换行。")); return; }
+        if (executable.contains('\n') || executable.contains('\r')) { showError(T("应用路径含无效换行。")); return; }
         QString quoted;
         for (QChar character : executable) {
             if (character == '%') { quoted += "%%"; continue; }
@@ -967,17 +1024,17 @@ void AppController::setAutoStart(bool enabled) {
     } else if (QFile::exists(path)) {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly) || !file.readAll().contains("Name=DevStats")) {
-            showError(QString::fromUtf8("登录启动文件不属于 DevStats，未修改。")); return;
+            showError(T("登录启动文件不属于 DevStats，未修改。")); return;
         }
         file.close();
-        if (!QFile::remove(path)) { showError(QString::fromUtf8("无法关闭登录启动。")); return; }
+        if (!QFile::remove(path)) { showError(T("无法关闭登录启动。")); return; }
     }
     updatePreferences();
 }
 
 void AppController::addProject() {
     ensureWindow();
-    const QString path = QFileDialog::getExistingDirectory(window_, QString::fromUtf8("选择需要归组的项目文件夹"));
+    const QString path = QFileDialog::getExistingDirectory(window_, T("选择需要归组的项目文件夹"));
     if (path.isEmpty()) return;
     const QString canonical = QFileInfo(path).canonicalFilePath();
     if (!canonical.isEmpty() && !projects_.contains(canonical)) projects_.append(canonical);
@@ -989,9 +1046,9 @@ void AppController::launchApplication(const QString &id) {
     if (id == "files") { QDesktopServices::openUrl(QUrl::fromLocalFile(QDir::homePath())); return; }
     if (id == "add") {
         ensureWindow();
-        if (customApps_.size() >= 8) { showError(QString::fromUtf8("最多添加 8 个快捷应用。")); return; }
-        const QString path = QFileDialog::getOpenFileName(window_, QString::fromUtf8("添加快捷应用"),
-            "/usr/share/applications", QString::fromUtf8("桌面应用 (*.desktop)"));
+        if (customApps_.size() >= 8) { showError(T("最多添加 8 个快捷应用。")); return; }
+        const QString path = QFileDialog::getOpenFileName(window_, T("添加快捷应用"),
+            "/usr/share/applications", T("桌面应用 (*.desktop)"));
         if (!path.isEmpty() && !customApps_.contains(path)) customApps_.append(path);
         storePreference("customApps", customApps_); updatePreferences(); return;
     }
@@ -1002,7 +1059,7 @@ void AppController::launchApplication(const QString &id) {
         const QString path = id.mid(7), gio = QStandardPaths::findExecutable("gio");
         if (!customApps_.contains(path) || !QFileInfo(path).isFile() || gio.isEmpty()
             || !QProcess::startDetached(gio, {"launch", path}))
-            showError(QString::fromUtf8("无法启动快捷应用，请检查 .desktop 文件和系统 gio 工具。"));
+            showError(T("无法启动快捷应用，请检查 .desktop 文件和系统 gio 工具。"));
         return;
     }
     const QMap<QString, QStringList> commands{
@@ -1013,5 +1070,5 @@ void AppController::launchApplication(const QString &id) {
         const QString executable = QStandardPaths::findExecutable(command);
         if (!executable.isEmpty() && QProcess::startDetached(executable, {})) return;
     }
-    showError(QString::fromUtf8("未找到可用的系统应用，请通过自定义快捷应用添加。"));
+    showError(T("未找到可用的系统应用，请通过自定义快捷应用添加。"));
 }

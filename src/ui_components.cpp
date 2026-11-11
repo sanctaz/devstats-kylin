@@ -1,4 +1,5 @@
 #include "ui_components.h"
+#include "i18n.h"
 #include "ui_theme.h"
 #include "resource_breakdown.h"
 
@@ -66,8 +67,8 @@ QString severityTone(const QString &severity) {
 }
 
 QString severityCaption(const QString &severity) {
-    return severity == QLatin1String("critical") ? QStringLiteral("严重")
-         : severity == QLatin1String("attention") ? QStringLiteral("注意") : QStringLiteral("提示");
+    return severity == QLatin1String("critical") ? T("严重")
+         : severity == QLatin1String("attention") ? T("注意") : T("提示");
 }
 
 QVBoxLayout *card(QVBoxLayout *parent, const QString &title, const QString &hint, QWidget *headerWidget) {
@@ -149,6 +150,49 @@ QWidget *disclosure(QLayout *parent, const QString &title, const QString &name, 
     parent->addWidget(body);
     return toggle;
 }
+}
+
+FlowLayout::FlowLayout(int horizontalSpacing, int verticalSpacing, QWidget *parent)
+    : QLayout(parent), horizontal_(horizontalSpacing), vertical_(verticalSpacing) { setContentsMargins(0, 0, 0, 0); }
+FlowLayout::~FlowLayout() { while (auto *item = takeAt(0)) delete item; }
+void FlowLayout::addItem(QLayoutItem *item) { items_.append(item); }
+int FlowLayout::count() const { return items_.size(); }
+QLayoutItem *FlowLayout::itemAt(int index) const { return items_.value(index); }
+QLayoutItem *FlowLayout::takeAt(int index) { return index >= 0 && index < items_.size() ? items_.takeAt(index) : nullptr; }
+Qt::Orientations FlowLayout::expandingDirections() const { return {}; }
+bool FlowLayout::hasHeightForWidth() const { return true; }
+int FlowLayout::heightForWidth(int width) const { return arrange(QRect(0, 0, width, 0), false); }
+void FlowLayout::setGeometry(const QRect &rect) { QLayout::setGeometry(rect); arrange(rect, true); }
+QSize FlowLayout::sizeHint() const {
+    // One row: what the layout takes when there is room.
+    int width = 0, height = 0, shown = 0;
+    for (const auto *item : items_) {
+        if (item->isEmpty()) continue;
+        width += item->sizeHint().width(); height = std::max(height, item->sizeHint().height()); ++shown;
+    }
+    const auto margins = contentsMargins();
+    return QSize(width + horizontal_ * std::max(0, shown - 1) + margins.left() + margins.right(), height + margins.top() + margins.bottom());
+}
+QSize FlowLayout::minimumSize() const {
+    // One item per row: the narrowest the layout can become.
+    QSize size;
+    for (const auto *item : items_) if (!item->isEmpty()) size = size.expandedTo(item->minimumSize());
+    const auto margins = contentsMargins();
+    return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
+}
+int FlowLayout::arrange(const QRect &rect, bool apply) const {
+    const auto margins = contentsMargins();
+    const QRect area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom());
+    int x = area.x(), y = area.y(), rowHeight = 0;
+    for (auto *item : items_) {
+        if (item->isEmpty()) continue;
+        const QSize size = item->sizeHint();
+        if (x > area.x() && x + size.width() > area.x() + area.width()) { x = area.x(); y += rowHeight + vertical_; rowHeight = 0; }
+        if (apply) item->setGeometry(QRect(QPoint(x, y), size));
+        x += size.width() + horizontal_;
+        rowHeight = std::max(rowHeight, size.height());
+    }
+    return y + rowHeight - rect.y() + margins.bottom();
 }
 
 ToggleSwitch::ToggleSwitch(QWidget *parent) : QAbstractButton(parent) {

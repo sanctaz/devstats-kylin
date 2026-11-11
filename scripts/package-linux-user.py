@@ -118,7 +118,8 @@ def main():
         shutil.copy2(PROJECT / 'VERSION', stage / 'VERSION')
         shutil.copy2(PROJECT / 'packaging/devstats.svg', stage / 'share/devstats.svg')
         shutil.copy2(PROJECT / 'packaging/LICENSE', stage / 'share/LICENSE.DevStats')
-        shutil.copy2(PROJECT / 'packaging/README-user.md', stage / 'README-user.md')
+        for name in ('README-user.md', 'README-user.en.md'):
+            shutil.copy2(PROJECT / 'packaging' / name, stage / name)
         (stage / '.devstats-user-package').write_text('DevStats private Qt runtime v1\n')
         (stage / 'libexec/qt.conf').write_text('[Paths]\nPrefix=..\nLibraries=lib\nPlugins=plugins\n')
         queue = [(binary, stage / 'libexec/devstats')]

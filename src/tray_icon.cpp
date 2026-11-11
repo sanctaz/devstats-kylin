@@ -1,4 +1,5 @@
 #include "tray_icon.h"
+#include "i18n.h"
 #include "charts.h"
 #include <QApplication>
 #include <QFontMetricsF>
@@ -20,12 +21,12 @@ int percentage(const QJsonValue &v) {
 QString percentText(int n) { return n < 0 ? QString::fromUtf8("—") : QString::number(n) + '%'; }
 QString iconPercent(int n) { return n < 0 ? QString::fromUtf8("—") : QString::number(n); }
 QString batteryTitle(const QString &state) {
-    if (state == "charging") return QStringLiteral("正在充电");
-    if (state == "full") return QStringLiteral("已充满");
-    if (state == "pluggedIn") return QStringLiteral("接电未充电");
-    if (state == "discharging") return QStringLiteral("使用电池");
-    if (state == "noBattery") return QStringLiteral("无内置电池");
-    return QStringLiteral("尚未读取到电池状态");
+    if (state == "charging") return T("正在充电");
+    if (state == "full") return T("已充满");
+    if (state == "pluggedIn") return T("接电未充电");
+    if (state == "discharging") return T("使用电池");
+    if (state == "noBattery") return T("无内置电池");
+    return T("尚未读取到电池状态");
 }
 struct Sample { int value; bool gap; };
 QVector<Sample> cpuSamples(const QJsonObject &snapshot) {
@@ -110,18 +111,18 @@ QString cacheKey(const QString &metric, const QJsonObject &snapshot, const QColo
 QString toolTip(const QString &metric, const QJsonObject &snapshot) {
     const auto data = snapshot.value(metric == "disk" ? "diskIO" : metric).toObject();
     QString result;
-    if (metric == "cpu") result = QStringLiteral("处理器 %1\n用户 %2 · 系统 %3\n单击查看处理器详情")
+    if (metric == "cpu") result = T("处理器 %1\n用户 %2 · 系统 %3\n单击查看处理器详情")
         .arg(percentText(percentage(data.value("usage"))), percentText(percentage(data.value("user"))), percentText(percentage(data.value("system"))));
-    else if (metric == "memory") result = QStringLiteral("内存 %1\n已用 %2 / 总计 %3\n单击查看内存详情")
+    else if (metric == "memory") result = T("内存 %1\n已用 %2 / 总计 %3\n单击查看内存详情")
         .arg(percentText(percentage(data.value("fraction"))), formatBytes(number(data.value("usedBytes"))), formatBytes(number(data.value("totalBytes"))));
-    else if (metric == "network") result = QStringLiteral("网络%1\n↑ 上传 %2\n↓ 下载 %3\n单击查看网络详情")
+    else if (metric == "network") result = T("网络%1\n↑ 上传 %2\n↓ 下载 %3\n单击查看网络详情")
         .arg(data.value("interface").toString().isEmpty() ? QString() : " · " + data.value("interface").toString(),
             formatBytes(number(data.value("uploadBytesPerSecond")), true), formatBytes(number(data.value("downloadBytesPerSecond")), true));
-    else if (metric == "disk") result = QStringLiteral("磁盘读写\n读取 %1\n写入 %2\n单击查看磁盘详情")
+    else if (metric == "disk") result = T("磁盘读写\n读取 %1\n写入 %2\n单击查看磁盘详情")
         .arg(formatBytes(number(data.value("readBytesPerSecond")), true), formatBytes(number(data.value("writeBytesPerSecond")), true));
     else if (metric == "battery") {
         const QString state = data.value("state").toString();
-        result = QStringLiteral("电池 / 电源\n%1%2\n单击查看电池与应用影响")
+        result = T("电池 / 电源\n%1%2\n单击查看电池与应用影响")
             .arg(state == "noBattery" ? QString() : percentText(percentage(data.value("level"))) + " · ", batteryTitle(state));
     }
     return result;

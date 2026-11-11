@@ -6,6 +6,7 @@
 #include "../src/diagnostics.h"
 #include "../src/diagnostics_panel.h"
 #include "../src/history_feed.h"
+#include "../src/i18n.h"
 #include "../src/memory_relief_dialog.h"
 #include "../src/monitor_window.h"
 #include "../src/process_rules_panel.h"
@@ -15,6 +16,12 @@
 
 #include <QAbstractButton>
 #include <QApplication>
+#include <QTextEdit>
+#include <QLineEdit>
+#include <QComboBox>
+#include <QAbstractSpinBox>
+#include <QTreeWidgetItemIterator>
+#include <QRegularExpression>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
@@ -124,11 +131,13 @@ QJsonObject snapshot(bool stressed, bool oldKernel) {
         {"r3", QJsonObject{{"matched", 0}, {"armed", 0}, {"protected", 0}, {"waitingExit", 0}, {"otherUser", 0}}},
         {"r4", QJsonObject{{"matched", 0}, {"armed", 0}, {"protected", 0}, {"waitingExit", 0}, {"otherUser", 0}}}};
     QJsonArray log;
+    // Worded as the application words its own log, so the fixture follows the language in use.
+    const auto condition = [](int cpu, int seconds) { return T("%1，持续 %2").arg(T("CPU 超过 %1%").arg(cpu), T("%1 秒").arg(seconds)); };
     const QList<QStringList> rows{
-        {"kysec-scan", "4410", "CPU 超过 50%，持续 30 秒", "exited", "已结束（3 秒）"},
-        {"sogou-updater", "3982", "运行时立即结束", "killed", "未响应结束请求，已强制结束"},
-        {"python3", "3711", "CPU 超过 200%，持续 60 秒", "survived", "10 秒后仍在运行，程序没有响应结束请求"},
-        {"ukui-window-sw", "2201", "运行时立即结束", "refused", "监控、桌面、终端或会话基础进程受到保护，请使用系统监视器查看。"}};
+        {"kysec-scan", "4410", condition(50, 30), "exited", T("已结束（%1）").arg(T("%1 秒").arg(3))},
+        {"sogou-updater", "3982", T("运行时立即结束"), "killed", T("未响应结束请求，已强制结束")},
+        {"python3", "3711", condition(200, 60), "survived", T("%1后仍在运行，程序没有响应结束请求").arg(T("%1 秒").arg(10))},
+        {"ukui-window-sw", "2201", T("运行时立即结束"), "refused", T("监控、桌面、终端或会话基础进程受到保护，请使用系统监视器查看。")}};
     int age = 90;
     for (const auto &row : rows) {
         QJsonObject entry{{"id", row[1]}, {"timestamp", now - age}, {"name", row[0]}, {"pid", row[1].toInt()}, {"executablePath", "/usr/bin/" + row[0]},
@@ -160,10 +169,10 @@ QJsonArray incidents() {
     const double now = QDateTime::currentMSecsSinceEpoch() / 1000.;
     QJsonArray list;
     const QList<QStringList> rows{
-        {"内存不足，系统正在回收内存", "firefox", "memory", "recovered"},
-        {"CPU 繁忙，占用最高的是 firefox（3.1 核）", "firefox", "cpu", "recovered"},
-        {"系统出现短暂冻结", "Xorg", "cpu", "recovered"},
-        {"磁盘繁忙，读写响应变慢", "kysec-scan", "io", "active"}};
+        {T("内存不足，系统正在回收内存"), "firefox", "memory", "recovered"},
+        {T("CPU 繁忙，占用最高的是 %1（%2%3）").arg("firefox", T("%1 核").arg("3.1"), QString()), "firefox", "cpu", "recovered"},
+        {T("系统出现短暂冻结"), "Xorg", "cpu", "recovered"},
+        {T("磁盘繁忙，读写响应变慢"), "kysec-scan", "io", "active"}};
     int age = 1800;
     for (const auto &row : rows) {
         list.append(QJsonObject{{"id", row[0]}, {"startTimestamp", now - age}, {"lastTimestamp", now - age + 42}, {"durationSeconds", 42}, {"summary", row[0]},
@@ -184,10 +193,48 @@ QJsonObject incidentDetail() {
                 QJsonObject{{"name", "kswapd0"}, {"owner", "root"}, {"pid", 61}, {"cpuPercent", 46}, {"memoryBytes", 0}}}}};
     };
     auto event = incidents().first().toObject();
-    event["headlineEvidence"] = QStringLiteral("可用 328 MB（2%） · 换入 38 MB/s，换出 52 MB/s · 直接回收 80 次/s");
+    event["headlineEvidence"] = QStringList{T("可用 %1（%2）").arg("328 MB", "2%"), T("换入 %1/s，换出 %2/s").arg("38 MB", "52 MB"),
+        T("直接回收 %1 次/s").arg(80)}.join(QStringLiteral(" · "));
     const auto stressed = snapshot(true, false);
     event["witnesses"] = QJsonArray{sample(stressed, {"onset"}), sample(stressed, {"peakCPU", "peakMemoryPressure"}), sample(stressed, {"last"})};
     return event;
+}
+
+// In English nothing a page shows may still be Chinese: its texts, its tool tips and
+// what it tells assistive technology. Text that widgets paint themselves is covered by
+// the catalog check instead.
+QStringList chineseLeft(QWidget &root) {
+    static const QRegularExpression chinese(QStringLiteral("[\\x{3400}-\\x{9fff}\\x{3000}-\\x{303f}\\x{ff00}-\\x{ffef}]"));
+    QStringList found;
+    const auto look = [&](const QString &text, const QWidget *owner) {
+        if (text.contains(chinese))
+            found << QString::fromLatin1(owner->metaObject()->className()) + QStringLiteral(" '") + owner->objectName() + QStringLiteral("': ") + text.left(48);
+    };
+    QList<QWidget *> widgets = root.findChildren<QWidget *>();
+    widgets.prepend(&root);
+    for (auto *widget : widgets) {
+        if (widget->objectName() == "languageMode") continue; // Names each language in itself.
+        look(widget->toolTip(), widget); look(widget->accessibleName(), widget); look(widget->accessibleDescription(), widget);
+        look(widget->windowTitle(), widget);
+        if (auto *label = qobject_cast<QLabel *>(widget)) look(label->text(), widget);
+        if (auto *button = qobject_cast<QAbstractButton *>(widget)) look(button->text(), widget);
+        if (auto *edit = qobject_cast<QLineEdit *>(widget)) look(edit->placeholderText(), widget);
+        if (auto *spin = qobject_cast<QAbstractSpinBox *>(widget)) look(spin->text(), widget);
+        if (auto *text = qobject_cast<QTextEdit *>(widget)) look(text->toPlainText(), widget);
+        if (auto *combo = qobject_cast<QComboBox *>(widget)) for (int i = 0; i < combo->count(); ++i) look(combo->itemText(i), widget);
+        if (auto *list = qobject_cast<QListWidget *>(widget))
+            for (int i = 0; i < list->count(); ++i) { look(list->item(i)->text(), widget); look(list->item(i)->toolTip(), widget); }
+        if (auto *tree = qobject_cast<QTreeWidget *>(widget)) {
+            for (int column = 0; column < tree->columnCount(); ++column) look(tree->headerItem()->text(column), widget);
+            for (QTreeWidgetItemIterator it(tree); *it; ++it)
+                for (int column = 0; column < tree->columnCount(); ++column) { look((*it)->text(column), widget); look((*it)->toolTip(column), widget); }
+        }
+    }
+    return found;
+}
+void checkEnglish(QWidget &root, const QString &name) {
+    const auto found = chineseLeft(root);
+    check(found.isEmpty(), name + QStringLiteral(": Chinese left in the English interface: ") + found.mid(0, 6).join(QStringLiteral("; ")));
 }
 
 // Nothing in a visible page may be clipped by the window's right edge.
@@ -223,10 +270,15 @@ int main(int argc, char **argv) {
     if (!output.isEmpty()) QDir().mkpath(output);
     const QStringList modules{"overview", "cpu", "memory", "disk", "network", "battery", "diagnostics", "automation", "projects"};
     const qint64 end = QDateTime::currentSecsSinceEpoch();
-    struct Variant { const char *name; int appearance; QSize size; bool stressed, oldKernel; };
-    const Variant variants[] = {{"dark", 1, QSize(1100, 780), true, false}, {"light", 2, QSize(1100, 780), true, false},
-                                {"dark-idle", 1, QSize(1100, 780), false, false}, {"dark-min", 1, QSize(780, 560), true, true}, {"light-min", 2, QSize(780, 560), false, true}};
+    struct Variant { const char *name; int appearance; QSize size; bool stressed, oldKernel, english; };
+    const Variant variants[] = {{"dark", 1, QSize(1100, 780), true, false, false}, {"light", 2, QSize(1100, 780), true, false, false},
+                                {"dark-idle", 1, QSize(1100, 780), false, false, false}, {"dark-min", 1, QSize(780, 560), true, true, false},
+                                {"light-min", 2, QSize(780, 560), false, true, false},
+                                // English wording is longer: the same checks at both sizes, plus a search for Chinese left behind.
+                                {"en-dark", 1, QSize(1100, 780), true, false, true}, {"en-light", 2, QSize(1100, 780), true, false, true},
+                                {"en-dark-idle", 1, QSize(1100, 780), false, false, true}, {"en-dark-min", 1, QSize(780, 560), true, true, true}};
     for (const auto &variant : variants) {
+        DevStatsLanguage::apply(variant.english ? DevStatsLanguage::English : DevStatsLanguage::Chinese);
         MonitorWindow window;
         window.setAttribute(Qt::WA_DeleteOnClose, false);
         window.setAppearance(variant.appearance);
@@ -251,6 +303,7 @@ int main(int argc, char **argv) {
             settle();
             const QString name = QString::fromLatin1(variant.name) + '-' + module;
             checkLayout(window, name);
+            if (variant.english) checkEnglish(window, name);
             if (module == "disk") {
                 // Heaviest reader first; root processes, whose volume needs root, follow by disk wait.
                 auto *disk = window.findChild<QTreeWidget *>("diskProcesses");
@@ -274,9 +327,20 @@ int main(int argc, char **argv) {
             if (tab == 1) { window.setIncidentDetail(incidentDetail()); settle(); }
             const QString name = QString::fromLatin1(variant.name) + "-diagnostics-tab" + QString::number(tab);
             checkLayout(window, name);
+            if (variant.english) checkEnglish(window, name);
             if (!output.isEmpty()) {
                 auto *body = window.findChild<QWidget *>("diagnosticsPage");
                 body->grab().save(output + '/' + name + "-full.png");
+            }
+        }
+        if (variant.english && variant.stressed) {
+            static const QRegularExpression chinese(QStringLiteral("[\\x{3400}-\\x{9fff}\\x{3000}-\\x{303f}\\x{ff00}-\\x{ffef}]"));
+            const QString diagnosis = DevStatsReport::diagnosisHtml(window.diagnosticReport()), incident = DevStatsReport::incidentHtml(incidentDetail());
+            check(diagnosis.contains("<html lang=\"en\">") && !diagnosis.contains(chinese), "the diagnosis report is in English");
+            check(incident.contains("<html lang=\"en\">") && !incident.contains(chinese), "the stall record report is in English");
+            if (!output.isEmpty() && variant.size == QSize(1100, 780)) {
+                check(DevStatsReport::writePrivate(output + "/diagnosis-report-en.html", diagnosis.toUtf8()).isEmpty(), "English diagnosis report exported");
+                check(DevStatsReport::writePrivate(output + "/incident-report-en.html", incident.toUtf8()).isEmpty(), "English incident report exported");
             }
         }
         if (!output.isEmpty() && QString::fromLatin1(variant.name) == "dark") {
@@ -290,6 +354,7 @@ int main(int argc, char **argv) {
             QTimer::singleShot(100, &app, [prefix] {
                 auto *editor = QApplication::activeModalWidget();
                 check(editor && editor->objectName() == "processRuleEditor", "rule editor opens");
+                if (DevStatsLanguage::isEnglish()) checkEnglish(*editor, "rule editor");
                 check(editor->grab().save(prefix + "-rule-editor.png"), "rule editor saved");
                 qobject_cast<QDialog *>(editor)->reject();
             });
@@ -298,16 +363,25 @@ int main(int argc, char **argv) {
             settle();
             auto *settings = window.findChild<QDialog *>("preferencesDialog");
             check(settings && settings->grab().save(prefix + "-settings.png"), "settings saved");
+            // The dialog holds what a user needs to set, and says which version is in use.
+            for (const char *name : {"appearanceMode", "languageMode", "trayTheme", "trayLargeText", "autoStart", "automationNotifications", "customApps", "versionLabel"})
+                check(settings->findChild<QWidget *>(name), QStringLiteral("settings have %1").arg(QString::fromLatin1(name)));
+            auto *versionLabel = settings->findChild<QLabel *>("versionLabel");
+            check(versionLabel && QRegularExpression("\\d+\\.\\d+\\.\\d+").match(versionLabel->text()).hasMatch(), "settings show the version in use");
+            check(versionLabel && versionLabel->text().startsWith(variant.english ? "Version " : QString::fromUtf8("版本 ")), "the version is worded in the language in use");
+            if (variant.english) checkEnglish(*settings, "settings");
             settings->close();
             MemoryReliefDialog relief(&window);
             relief.setSnapshot(data);
             relief.show();
             settle();
             check(relief.grab().save(prefix + "-relief.png"), "relief dialog saved");
+            if (variant.english) checkEnglish(relief, "relief dialog");
             relief.close();
         }
         window.close();
     }
-    std::printf(failures ? "FAIL: %d checks\n" : "PASS: every page renders in both themes and sizes without overflow\n", failures);
+    DevStatsLanguage::apply(DevStatsLanguage::Chinese);
+    std::printf(failures ? "FAIL: %d checks\n" : "PASS: every page renders in both themes, sizes and languages without overflow; nothing Chinese is left in English\n", failures);
     return failures ? 1 : 0;
 }

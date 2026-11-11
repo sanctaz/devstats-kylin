@@ -1,4 +1,5 @@
 #include "memory_optimizer.h"
+#include "i18n.h"
 
 #include <QDateTime>
 #include <QFile>
@@ -124,12 +125,12 @@ QJsonObject MemoryOptimizer::reclaim() {
     const qint64 milliseconds = now();
     auto result = outcome(false);
     if (milliseconds < 0) {
-        result["message"] = QStringLiteral("单调计时暂不可用，未尝试回收；请稍后重试。");
+        result["message"] = T("单调计时暂不可用，未尝试回收；请稍后重试。");
         return result;
     }
     if (lastAttempt_ >= 0 && milliseconds - lastAttempt_ < ManualCooldown) {
         const qint64 remaining = (ManualCooldown - (milliseconds - lastAttempt_) + 999) / 1000;
-        result["message"] = QStringLiteral("本应用内存回收处于 10 秒冷却期，还需等待 %1 秒；本次未尝试回收。").arg(remaining);
+        result["message"] = T("本应用内存回收处于 10 秒冷却期，还需等待 %1 秒；本次未尝试回收。").arg(remaining);
         return result;
     }
     return perform(false, milliseconds);
@@ -148,13 +149,13 @@ QJsonObject MemoryOptimizer::perform(bool automatic, qint64 milliseconds) {
     result["rssAfterBytes"] = bytesOrUnknown(after);
     if (before >= 0 && after >= 0) result["observedReductionBytes"] = double(qMax<qint64>(0, before - after));
     if (trimmed != 0 && trimmed != 1) {
-        result["message"] = QStringLiteral("此平台不支持 glibc 空闲堆页回收，本次未尝试回收。");
+        result["message"] = T("此平台不支持 glibc 空闲堆页回收，本次未尝试回收。");
     } else {
         QString message = trimmed == 1
-            ? QStringLiteral("已尝试回收本应用空闲堆页；glibc 报告已归还部分空闲堆页。")
-            : QStringLiteral("已尝试回收本应用空闲堆页；glibc 未报告归还空闲堆页。");
-        if (before < 0 || after < 0) message += QStringLiteral("本次无法完整测量本应用 RSS。");
-        else message += QStringLiteral("RSS 前后差仅为即时观测，不能证明系统可用内存增加。");
+            ? T("已尝试回收本应用空闲堆页；glibc 报告已归还部分空闲堆页。")
+            : T("已尝试回收本应用空闲堆页；glibc 未报告归还空闲堆页。");
+        if (before < 0 || after < 0) message += T("本次无法完整测量本应用 RSS。");
+        else message += T("RSS 前后差仅为即时观测，不能证明系统可用内存增加。");
         result["message"] = message;
     }
     return result;

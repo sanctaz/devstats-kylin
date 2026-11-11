@@ -69,6 +69,9 @@ with tempfile.TemporaryDirectory(prefix='devstats-cpu-limit-') as temporary:
         '[General]\nautomationEnabled=true\nautomationRules=' + qt_ini(json.dumps(rules)) + '\n')
 
     environment = {k: v for k, v in os.environ.items() if not k.startswith(('DEVSTATS_', 'XDG_')) and k != 'DISPLAY'}
+    # The log is worded in the interface language, and the checks below read the Chinese wording.
+    environment.update(LANG='zh_CN.UTF-8', LANGUAGE='zh_CN:zh')
+    environment.pop('LC_ALL', None); environment.pop('LC_MESSAGES', None)
     environment.update(QT_QPA_PLATFORM='offscreen', XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'),
                        XDG_CACHE_HOME=str(root / 'cache'), XDG_RUNTIME_DIR=str(root / 'runtime'), DEVSTATS_DATA_DIR=str(root / 'data/devstats'))
 

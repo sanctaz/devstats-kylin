@@ -133,6 +133,8 @@ public:
     MonitorWindow *window() const;
     static QString autostartPath();
     static bool autoStartEnabled();
+    // The language the user chose, read before there is a controller: 0 follows the system.
+    static int storedLanguage();
 signals:
     void snapshotUpdated();
 private:
@@ -142,6 +144,8 @@ private:
     void updatePreferences();
     void setAutoStart(bool enabled);
     void applyMenuTheme();
+    void retranslateMenu();
+    void setLanguage(int mode);
     void notifyAutomation();
     void launchApplication(const QString &id);
     void addProject();
@@ -172,6 +176,9 @@ private:
     QMenu *menu_ = nullptr;
     int trayTheme_ = 0;
     int appearance_ = 1;
+    // 0 follows the system, 1 Chinese, 2 English.
+    int language_ = 0;
+    QMenu *metricsMenu_ = nullptr;
     bool largeTrayText_ = true;
     bool incidentRecording_ = true;
     bool stopped_ = false;

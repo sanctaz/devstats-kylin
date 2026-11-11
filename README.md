@@ -1,10 +1,10 @@
 # DevStats 麒麟版
 
+**简体中文** | [English](README.en.md)
+
 **银河麒麟信创本的系统监控：看清电脑为什么卡，并按规则自动结束失控的程序。**
 
-适用于银河麒麟桌面操作系统 V10 SP1（ARM64）。普通用户安装，不需要 root，不改系统目录。Qt 5 / C++17 实现，只读取 `/proc` 和 `/sys`。
-
-*A system monitor for Kylin Desktop V10 (ARM64) laptops: it explains why the desktop stalls and ends runaway programs by rule, such as "CPU above 80% for 30 seconds". Installs per user, no root required.*
+适用于银河麒麟桌面操作系统 V10 SP1（ARM64）。普通用户安装，不需要 root，不改系统目录。Qt 5 / C++17 实现，只读取 `/proc` 和 `/sys`。界面支持简体中文和英文。
 
 ![总览](docs/images/overview.png)
 
@@ -74,13 +74,17 @@ DevStats 麒麟版做两件事：
 
 ![浅色](docs/images/overview-light.png)
 
+## 界面语言
+
+界面有简体中文和英文两种。默认跟随系统：系统语言是中文（按 `LC_ALL`、`LC_MESSAGES`、`LANG` 和 `LANGUAGE` 的第一项判断）显示中文，其他语言显示英文。在设置的“语言”里可以固定为中文或 English，改完立即生效，不需要重启。切换之前已经保存的卡顿记录和执行记录，保持保存时的文字。
+
 ## 安装
 
 从 [Releases](../../releases) 下载 `devstats-<版本>-linux-arm64-user.tar.gz`，在麒麟电脑上运行：
 
 ```bash
-tar -xzf devstats-0.8.6-linux-arm64-user.tar.gz
-cd devstats-0.8.6-linux-arm64-user
+tar -xzf devstats-1.0.0-linux-arm64-user.tar.gz
+cd devstats-1.0.0-linux-arm64-user
 ./install-user.sh
 ```
 
@@ -90,13 +94,13 @@ cd devstats-0.8.6-linux-arm64-user
 - 升级前先从托盘菜单退出正在运行的 DevStats。已开启的“登录后启动”会自动改为启动新版本。
 - 卸载：运行 `~/.local/bin/devstats-uninstall`，设置和历史数据会保留。
 
-完整说明见 [安装与使用说明](packaging/README-user.md)。系统要求：麒麟 V10 SP1 ARM64、glibc 2.31 或更新、X11 或 Wayland 图形会话，详见 [目标环境](TARGET-ENVIRONMENT.md)。
+完整说明见 [安装与使用说明](packaging/README-user.md)（[English](packaging/README-user.en.md)）。系统要求：麒麟 V10 SP1 ARM64、glibc 2.31 或更新、X11 或 Wayland 图形会话，详见 [目标环境](TARGET-ENVIRONMENT.md)。
 
 ## 开销
 
 系统指标每 2 秒采样一次；进程在后台每 10 秒扫描一次，窗口可见、诊断中或有规则超限时改为每 2 秒一次。在 x86_64 测试机上只开托盘时，约占单核 0.5% 的 CPU，内存约 26 MiB。
 
-当前用户的进程越多，扫描越贵。0.8.6 在 x86_64 测试机上模拟 150 个当前用户进程时，窗口刚打开约占单核 1.9%，开着 10 分钟后约 2.3%，只开托盘约 0.6%。0.8.5 开着 10 分钟后是 3.7%：那时历史曲线每 2 秒整段重发、整条重画，开得越久越贵。现在只发新增的点，图表分条绘制；时间范围选得越长、数据越抖，重画仍然越贵，只是低得多。DevStats 自己的占用不会被诊断当成卡顿的原因；打开窗口和一键诊断时它会短暂升高，进程列表里标为“（本工具）”。
+当前用户的进程越多，扫描越贵。在 x86_64 测试机上模拟 150 个当前用户进程时，窗口刚打开约占单核 1.9%，开着 10 分钟后约 2.3%，只开托盘约 0.6%。0.8.5 开着 10 分钟后是 3.7%：那时历史曲线每 2 秒整段重发、整条重画，开得越久越贵。现在只发新增的点，图表分条绘制；时间范围选得越长、数据越抖，重画仍然越贵，只是低得多。DevStats 自己的占用不会被诊断当成卡顿的原因；打开窗口和一键诊断时它会短暂升高，进程列表里标为“（本工具）”。
 
 ## 从源码构建
 
@@ -121,6 +125,10 @@ python3 scripts/package-linux-user.py --binary build/linux-arm64/devstats --sysr
 
 `VERSION` 是版本号的唯一来源。
 
+## 界面文字
+
+界面文字在用到的地方直接写中文，放在 `T("…")` 里；和数量有关的用 `Tn("…", 数量)`，同一个中文词在英文里要分开说的用 `Tc("语境", "…")`。`src/assets/i18n-en.json` 把每条文字对应到英文。`scripts/check-i18n.py` 保证两边一致，并随测试一起运行：每条文字都有英文，占位符和 HTML 标签一致，英文里没有残留的中文，源码里没有漏在 `T()` 之外的中文字面量。
+
 ## 测试
 
 ```bash
@@ -135,13 +143,14 @@ python3 scripts/test-linux-uninstall.py
 python3 tests/test_prefix_paths.py
 ```
 
-`tests/test_ui_preview` 用合成数据把所有页面按深色、浅色、正常和最小窗口渲染成 PNG，并检查控件有没有超出窗口、布局有没有被压缩。上面的截图就来自它。
+`tests/test_ui_preview` 用合成数据把所有页面按深色、浅色、正常和最小窗口、中文和英文渲染成 PNG，并检查控件有没有超出窗口、布局有没有被压缩、英文页面有没有残留中文。上面的截图就来自它。
 
 ## 已知限制
 
 - 主要在 x86_64 测试机、QEMU 和 Xvfb 上验证。托盘、主题、Wayland/Xwayland、电池、温度传感器和真实性能还需要更多麒麟实机反馈。
 - 诊断阈值来自经验，没有针对每种机型校准。
 - 只能结束当前用户的进程；CPU 按单个进程判断。
+- 导出报告时的文件选择框由 Qt 或桌面环境提供，语言不跟随 DevStats 里的设置。
 
 版本变化见 [CHANGELOG](CHANGELOG.md)。
 

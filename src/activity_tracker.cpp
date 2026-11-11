@@ -1,4 +1,5 @@
 #include "activity_tracker.h"
+#include "i18n.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -86,12 +87,17 @@ void RecentActivityTracker::reset() {
 }
 
 void RecentActivityTracker::refreshMetadata(double now) {
-    if (metadataTime_ >= 0 && now >= metadataTime_ && now - metadataTime_ < 300) return;
+    const bool english = DevStatsLanguage::isEnglish();
+    if (metadataTime_ >= 0 && now >= metadataTime_ && now - metadataTime_ < 300 && english == metadataEnglish_) return;
     metadataTime_ = now;
+    metadataEnglish_ = english;
     desktops_.clear();
     QSet<QString> seenIds;
     int examined = 0;
-    const QString locale = QLocale().name();
+    // Application names follow the interface language. A desktop entry's plain Name is
+    // English by convention; its Chinese name is asked for even on a system in another language.
+    const QString system = QLocale().name();
+    const QString locale = english ? QString() : system.startsWith(QLatin1String("zh")) ? system : QStringLiteral("zh_CN");
     for (const auto &directory : directories_) {
         QDirIterator files(directory, {"*.desktop"}, QDir::Files, QDirIterator::Subdirectories);
         while (files.hasNext() && examined < 4096 && desktops_.size() < 2048) {
@@ -112,8 +118,8 @@ void RecentActivityTracker::refreshMetadata(double now) {
             if (values.value("Type") != "Application" || values.value("Hidden") == "true") continue;
             const QString executable = desktopExecutable(values.value("Exec"));
             if (executable.isEmpty() || desktops_.contains(executable)) continue;
-            QString name = values.value("Name[" + locale + ']');
-            if (name.isEmpty()) name = values.value("Name[" + locale.section('_', 0, 0) + ']');
+            QString name = locale.isEmpty() ? QString() : values.value("Name[" + locale + ']');
+            if (name.isEmpty() && !locale.isEmpty()) name = values.value("Name[" + locale.section('_', 0, 0) + ']');
             if (name.isEmpty()) name = values.value("Name");
             if (name.isEmpty()) name = QFileInfo(executable).fileName();
             desktops_.insert(executable, {name, path, QFileInfo(executable).absolutePath(), values.value("Terminal") == "true" || values.value("Categories").split(';').contains("TerminalEmulator")});

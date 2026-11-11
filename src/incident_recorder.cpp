@@ -1,4 +1,5 @@
 #include "incident_recorder.h"
+#include "i18n.h"
 #include "diagnostics.h"
 
 #include <QCryptographicHash>
@@ -46,18 +47,18 @@ QString digest(const QString &identity) {
     return "sha256:" + QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
 }
 QJsonArray coverage() {
-    return {QStringLiteral("进程排行是卡顿期间最忙的程序，相关性很强，但不等于证明。"),
-        QStringLiteral("进程 CPU 以单核为 100%，可超过 100%；内存为 RSS，含共享页。"),
-        QStringLiteral("每条记录保留触发前和卡顿期间的关键采样；只存程序名和 PID，不存命令行或文件路径。")};
+    return {T("进程排行是卡顿期间最忙的程序，相关性很强，但不等于证明。"),
+        T("进程 CPU 以单核为 100%，可超过 100%；内存为 RSS，含共享页。"),
+        T("每条记录保留触发前和卡顿期间的关键采样；只存程序名和 PID，不存命令行或文件路径。")};
 }
 bool secureDirectory(const QString &path, QString &error) {
     const auto raw = QFile::encodeName(path); struct stat st {};
     if (lstat(raw.constData(), &st) != 0 &&
         (errno != ENOENT || !QDir().mkpath(path) || lstat(raw.constData(), &st) != 0)) {
-        error = QStringLiteral("无法创建卡顿记录目录：%1").arg(path); return false;
+        error = T("无法创建卡顿记录目录：%1").arg(path); return false;
     }
     if (!S_ISDIR(st.st_mode) || st.st_uid != getuid() || chmod(raw.constData(), 0700) != 0) {
-        error = QStringLiteral("卡顿记录目录必须由当前用户拥有，且不能是符号链接：%1").arg(path); return false;
+        error = T("卡顿记录目录必须由当前用户拥有，且不能是符号链接：%1").arg(path); return false;
     }
     return true;
 }
@@ -66,12 +67,12 @@ bool secureFile(const QString &path, bool create, QString &error) {
     const int fd = ::open(raw.constData(), O_RDWR | O_CLOEXEC | O_NOFOLLOW | (create ? O_CREAT : 0), 0600);
     if (fd < 0) {
         if (!create && errno == ENOENT) return true;
-        error = QStringLiteral("无法打开私有卡顿记录：%1 (%2)").arg(path, QString::fromLocal8Bit(strerror(errno))); return false;
+        error = T("无法打开私有卡顿记录：%1 (%2)").arg(path, QString::fromLocal8Bit(strerror(errno))); return false;
     }
     struct stat st {};
     const bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid() && st.st_nlink == 1 && fchmod(fd, 0600) == 0;
     ::close(fd);
-    if (!ok) error = QStringLiteral("卡顿记录必须是当前用户拥有的普通文件：%1").arg(path);
+    if (!ok) error = T("卡顿记录必须是当前用户拥有的普通文件：%1").arg(path);
     return ok;
 }
 // Keep only the bounded ranking candidates in native values. Building JSON for
@@ -226,7 +227,7 @@ QJsonObject compactSample(const QJsonObject &snapshot, const QJsonArray &finding
     const bool ageKnown = now >= 0 && scan >= 0 && scan <= now;
     const bool fresh = snapshot["processesFresh"].toBool() && ageKnown && now - scan <= 6;
     QJsonArray notes;
-    if (!fresh) notes.append(QStringLiteral("这次采样的进程列表是缓存的，排行可能滞后。"));
+    if (!fresh) notes.append(T("这次采样的进程列表是缓存的，排行可能滞后。"));
     result["processCoverage"] = QJsonObject{{"scope", "all-users"}, {"fresh", fresh}, {"ageSeconds", ageKnown ? QJsonValue(now - scan) : unknown()}, {"partial", partial}, {"notes", notes}};
     return result;
 }
@@ -255,7 +256,7 @@ EncodedPayload boundPayload(QJsonObject payload) {
     auto bytes = encode();
     if (bytes.size() <= PayloadLimit) return {payload, bytes};
     auto limits = payload["coverage"].toArray();
-    limits.append(QStringLiteral("该事件接近 128 KiB 存储上限；已先缩减最旧前置快照，再按需缩短资源排行。关键见证与未知/部分数据标记仍保留。"));
+    limits.append(T("该事件接近 128 KiB 存储上限；已先缩减最旧前置快照，再按需缩短资源排行。关键见证与未知/部分数据标记仍保留。"));
     payload["coverage"] = limits;
     int removed = 0, processLimit = 10, appLimit = 5;
     auto mark = [&] {
@@ -319,7 +320,7 @@ struct IncidentRecorder::Impl {
     double lastMono = -1, highStart = -1, lastWrite = -1, cooldownUntil = -1, cooldownHighStart = -1;
     int normalCount = 0;
     bool sidecars() {
-        for (const QString suffix : {QString(), QStringLiteral("-journal"), QStringLiteral("-wal"), QStringLiteral("-shm")})
+        for (const QString &suffix : {QString(), QStringLiteral("-journal"), QStringLiteral("-wal"), QStringLiteral("-shm")})
             if (!secureFile(path + suffix, false, error)) return false;
         return true;
     }
@@ -337,7 +338,7 @@ struct IncidentRecorder::Impl {
     bool write(const QJsonObject &source) {
         const auto encoded = boundPayload(source);
         const auto &payload = encoded.object; const auto &bytes = encoded.bytes;
-        if (bytes.size() > PayloadLimit) { error = QStringLiteral("卡顿记录超过 128 KiB 上限，未写入。"); return false; }
+        if (bytes.size() > PayloadLimit) { error = T("卡顿记录超过 128 KiB 上限，未写入。"); return false; }
         QSqlQuery q(database);
         if (!q.prepare("INSERT OR REPLACE INTO incidents(id,start_timestamp,last_timestamp,status,summary,payload,payload_bytes) VALUES(?,?,?,?,?,?,?)")) { error = q.lastError().text(); return false; }
         q.addBindValue(payload["id"].toString()); q.addBindValue(payload["startTimestamp"].toDouble()); q.addBindValue(payload["lastTimestamp"].toDouble());
@@ -366,9 +367,9 @@ struct IncidentRecorder::Impl {
         if (!ok) error = q.lastError().text();
         while (ok && q.next()) {
             auto object = QJsonDocument::fromJson(q.value(0).toByteArray()).object();
-            if (object.isEmpty()) { error = QStringLiteral("卡顿记录损坏，无法恢复。"); ok = false; break; }
+            if (object.isEmpty()) { error = T("卡顿记录损坏，无法恢复。"); ok = false; break; }
             object["status"] = "interrupted"; object["endTimestamp"] = object["lastTimestamp"];
-            object["interruptionReason"] = QStringLiteral("应用重新启动，前次记录未确认恢复。"); abandoned.append(object);
+            object["interruptionReason"] = T("应用重新启动，前次记录未确认恢复。"); abandoned.append(object);
         }
         q.finish(); for (const auto &object : abandoned) if (ok) ok = write(object);
         if (ok) ok = prune() && sidecars();
@@ -418,7 +419,7 @@ struct IncidentRecorder::Impl {
             }
         }
         witnessSlots["last"] = sample;
-        for (const QString kind : {QStringLiteral("CPU"), QStringLiteral("MemoryPressure"), QStringLiteral("IO"), QStringLiteral("Latency")}) {
+        for (const QString &kind : {QStringLiteral("CPU"), QStringLiteral("MemoryPressure"), QStringLiteral("IO"), QStringLiteral("Latency")}) {
             const QString label = "peak" + kind;
             if (score(sample, kind) >= 0 && (!witnessSlots.contains(label) || score(sample, kind) > score(witnessSlots.value(label), kind))) witnessSlots[label] = sample;
         }
@@ -488,7 +489,7 @@ void IncidentRecorder::setEnabled(bool enabled) {
     d->enabled = enabled;
 }
 void IncidentRecorder::resetObservation() {
-    d->finish("interrupted", QStringLiteral("监测被暂停、系统休眠或采样时钟重置；此次观察中断。"));
+    d->finish("interrupted", T("监测被暂停、系统休眠或采样时钟重置；此次观察中断。"));
     d->ring.clear(); d->suspect = {}; d->suspectPrelude = {}; d->cooldown = {}; d->cooldownUntil = -1; d->lastMono = d->highStart = -1; d->processCache = {}; d->processStamp = -2;
 }
 bool IncidentRecorder::wantsFreshProcesses() const {
@@ -498,11 +499,11 @@ bool IncidentRecorder::wantsFreshProcesses() const {
 bool IncidentRecorder::observe(const QJsonObject &snapshot) {
     if (!d->enabled) return false;
     const double now = number(snapshot, "monotonicSeconds"), timestamp = number(snapshot, "timestamp");
-    if (now < 0 || timestamp < 0 || timestamp > 1e12) { d->error = QStringLiteral("卡顿采样的时间戳无效。"); return d->finish("interrupted", QStringLiteral("采样时间未知，观察中断。")); }
+    if (now < 0 || timestamp < 0 || timestamp > 1e12) { d->error = T("卡顿采样的时间戳无效。"); return d->finish("interrupted", T("采样时间未知，观察中断。")); }
     bool changed = false;
     if (d->lastMono >= 0 && now == d->lastMono) return false;
     if (d->lastMono >= 0 && (now < d->lastMono || now - d->lastMono > 15)) {
-        changed = d->finish("interrupted", QStringLiteral("采样间隔超过 15 秒或时钟回退，观察中断。"));
+        changed = d->finish("interrupted", T("采样间隔超过 15 秒或时钟回退，观察中断。"));
         d->ring.clear(); d->suspect = {}; d->suspectPrelude = {}; d->cooldown = {}; d->cooldownUntil = -1; d->highStart = -1;
     }
     d->lastMono = now;
@@ -524,7 +525,7 @@ bool IncidentRecorder::observe(const QJsonObject &snapshot) {
     }
     const auto sample = compactSample(snapshot, findings, d->processCache);
     if (!d->active.isEmpty()) {
-        if (!known && !abnormal) changed = d->finish("interrupted", QStringLiteral("系统压力指标缺失或无法佐证恢复，观察中断。")) || changed;
+        if (!known && !abnormal) changed = d->finish("interrupted", T("系统压力指标缺失或无法佐证恢复，观察中断。")) || changed;
         else {
             d->update(sample, findings);
             d->normalCount = abnormal ? 0 : d->normalCount + 1;
@@ -562,9 +563,9 @@ QJsonObject IncidentRecorder::detail(const QString &id) {
     q.addBindValue(id);
     q.addBindValue(QDateTime::currentSecsSinceEpoch() - Retention);
     if (!q.exec()) { d->error = q.lastError().text(); return {}; }
-    if (!q.next()) { d->error = QStringLiteral("找不到该卡顿记录。"); return {}; }
+    if (!q.next()) { d->error = T("找不到该卡顿记录。"); return {}; }
     const auto object = QJsonDocument::fromJson(q.value(0).toByteArray()).object();
-    d->error = object.isEmpty() ? QStringLiteral("卡顿记录损坏。") : d->persistError;
+    d->error = object.isEmpty() ? T("卡顿记录损坏。") : d->persistError;
     return object;
 }
 void IncidentRecorder::flush() {

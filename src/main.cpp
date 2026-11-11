@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <memory>
 #include "controller.h"
+#include "i18n.h"
 #include "monitor_window.h"
 #include "linux_sampler.h"
 #include "runtime_env.h"
@@ -133,6 +134,8 @@ int main(int argc, char **argv) {
     app.setApplicationName("DevStats");
     app.setOrganizationName("DevStats");
     app.setApplicationVersion(DEVSTATS_VERSION);
+    // The one-shot modes below word their output too.
+    DevStatsLanguage::apply(AppController::storedLanguage());
     app.setQuitOnLastWindowClosed(false);
     TerminationSignals termination(app);
     const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);

@@ -2,6 +2,8 @@
 #include <QAbstractButton>
 #include <QFrame>
 #include <QJsonObject>
+#include <QLayout>
+#include <QList>
 #include <QVector>
 
 class QAbstractItemView;
@@ -38,6 +40,30 @@ bool literalToolTip(QHelpEvent *event, QAbstractItemView *view, const QModelInde
 }
 
 // An on/off control that looks the same under every Linux widget style.
+// Lays its items out from left to right at their natural size and starts a new row
+// when the width runs out. For rows of figures and tags, whose width depends on the
+// wording and so on the language.
+class FlowLayout final : public QLayout {
+public:
+    FlowLayout(int horizontalSpacing, int verticalSpacing, QWidget *parent = nullptr);
+    ~FlowLayout() override;
+    void addItem(QLayoutItem *item) override;
+    int count() const override;
+    QLayoutItem *itemAt(int index) const override;
+    QLayoutItem *takeAt(int index) override;
+    Qt::Orientations expandingDirections() const override;
+    bool hasHeightForWidth() const override;
+    int heightForWidth(int width) const override;
+    void setGeometry(const QRect &rect) override;
+    QSize sizeHint() const override;
+    QSize minimumSize() const override;
+private:
+    // The height the items need in `rect`'s width; with `apply`, also places them.
+    int arrange(const QRect &rect, bool apply) const;
+    QList<QLayoutItem *> items_;
+    int horizontal_, vertical_;
+};
+
 class ToggleSwitch final : public QAbstractButton {
     Q_OBJECT
 public:
