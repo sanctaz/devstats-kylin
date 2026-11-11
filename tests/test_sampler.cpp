@@ -27,7 +27,8 @@ void write(const QString &path, const QByteArray &value) {
     check(file.write(value) == value.size(), "write fixture file");
 }
 QByteArray stat(qint64 pid, qint64 parent, quint64 ticks, quint64 start, quint64 rss,
-                const QByteArray &name = "node (worker)", quint64 majorFaults = 0, const QByteArray &state = "S", qint64 blkio = -1) {
+                const QByteArray &name = "node (worker)", quint64 majorFaults = 0, const QByteArray &state = "S", qint64 blkio = -1,
+                quint64 childTicks = 0) {
     // Fields 3 through 24 of proc_pid_stat, or through 42 (delayacct_blkio_ticks) when
     // blkio is given; comm deliberately contains parentheses.
     QList<QByteArray> values;
@@ -36,6 +37,7 @@ QByteArray stat(qint64 pid, qint64 parent, quint64 ticks, quint64 start, quint64
     values[0] = state; values[1] = QByteArray::number(parent);
     values[9] = QByteArray::number(majorFaults);
     values[11] = QByteArray::number(ticks); values[19] = QByteArray::number(start);
+    values[13] = QByteArray::number(childTicks);
     values[21] = QByteArray::number(rss);
     return QByteArray::number(pid) + " (" + name + ") " + values.join(' ') + '\n';
 }
@@ -61,28 +63,28 @@ void testFreshProcessPaths() {
     const QString first = temp.path() + "/first", second = temp.path() + "/second";
     write(first + "/package.json", "{}"); write(second + "/package.json", "{}");
     write(first + "/app", "first"); write(second + "/app", "second");
-    const QString alias = temp.path() + "/current";
-    auto retarget = [&](const QString &target) {
-        QFile::remove(alias);
-        check(::symlink(QFile::encodeName(target).constData(), QFile::encodeName(alias).constData()) == 0,
-              "retarget project alias");
+    // Like the kernel's proc links, each link names the real path directly.
+    auto point = [&](const QString &target) {
+        for (int pid : {401, 402}) {
+            const QString base = proc + '/' + QString::number(pid);
+            QFile::remove(base + "/cwd"); QFile::remove(base + "/exe");
+            check(::symlink(QFile::encodeName(target).constData(), QFile::encodeName(base + "/cwd").constData()) == 0 &&
+                  ::symlink(QFile::encodeName(target + "/app").constData(), QFile::encodeName(base + "/exe").constData()) == 0,
+                  "point proc links");
+        }
     };
-    retarget(first);
-    process(proc, 401, 1, 1, 4000, 1, alias);
-    process(proc, 402, 401, 1, 4001, 1, alias);
-    for (int pid : {401, 402})
-        check(::symlink(QFile::encodeName(alias + "/app").constData(),
-                        QFile::encodeName(proc + '/' + QString::number(pid) + "/exe").constData()) == 0,
-              "shared executable alias");
+    process(proc, 401, 1, 1, 4000, 1);
+    process(proc, 402, 401, 1, 4001, 1);
+    point(first);
     LinuxSampler sampler(proc, sys);
     const auto before = sampler.sample();
     check(byPid(before, 401)["projectPath"].toString() == first &&
           byPid(before, 402)["executablePath"].toString() == first + "/app", "shared paths resolve initially");
-    retarget(second);
+    point(second);
     const auto after = sampler.sample();
     check(byPid(after, 401)["projectPath"].toString() == second &&
           byPid(after, 402)["executablePath"].toString() == second + "/app",
-          "canonical paths are refreshed on every process scan");
+          "proc links are read again on every process scan");
     sampler.setProjectRoots({first, second});
     process(proc, 403, 1, 1, 4002, 1, {}, QByteArray("compiler\0", 9) + QByteArray(8192, 'x') +
             '\0' + QFile::encodeName(first) + '\0');
@@ -92,6 +94,43 @@ void testFreshProcessPaths() {
             QFile::encodeName(second) + '\0');
     check(byPid(sampler.sample(), 403)["projectPath"].toString() == second,
           "same process command changes are visible on the next scan");
+}
+// Short-lived children show up only in the CPU their parent collects when it waits
+// for them. A child seen alive already showed its own CPU and is not counted twice.
+void testChildAttribution() {
+    QTemporaryDir temp;
+    check(temp.isValid(), "child fixture");
+    const QString proc = temp.path() + "/proc", sys = temp.path() + "/sys";
+    auto put = [&](qint64 pid, qint64 parent, quint64 ticks, quint64 start, quint64 childTicks) {
+        write(proc + '/' + QString::number(pid) + "/stat", stat(pid, parent, ticks, start, 1, "worker", 0, "S", -1, childTicks));
+    };
+    put(600, 1, 0, 6000, 0);          // reference: its own CPU only
+    put(501, 1, 10, 5010, 0);         // a script loop starting commands
+    put(502, 501, 50, 5020, 0);       // one command seen alive at 50 ticks
+    put(701, 1, 10, 7010, 0);         // a parent of one long job
+    put(702, 701, 400, 7020, 0);      // the long job, seen alive at 400 ticks
+    put(::getpid(), 1, 0, 9000, 0);   // DevStats itself
+    LinuxSampler sampler(proc, sys);
+    const auto first = sampler.sample();
+    check(first["processCreation"].toObject().isEmpty(), "first scan has no interval to attribute");
+    check(byPid(first, ::getpid())["self"].toBool() && first["selfPid"].toDouble() == ::getpid(), "DevStats marks its own process");
+    QThread::msleep(30);
+    put(600, 1, 100, 6000, 0);
+    QDir(proc + "/502").removeRecursively(); QDir(proc + "/702").removeRecursively();
+    put(501, 1, 10, 5010, 300);       // waited for 502 (50) plus never-seen children (250)
+    put(701, 1, 10, 7010, 400);       // waited for the long job only
+    put(503, 501, 0, 5030, 0); put(504, 501, 0, 5040, 0);
+    const auto second = sampler.sample();
+    const auto reference = byPid(second, 600)["cpuPercent"].toDouble();
+    check(reference > 0, "reference CPU measured");
+    near(byPid(second, 501)["childCpuPercent"].toDouble() / reference, 2.5,
+         "parent is credited only for children that were never seen alive");
+    check(!byPid(second, 701).contains("childCpuPercent"), "a long job that was seen alive does not spike its parent");
+    check(byPid(second, 501)["newChildren"].toInt() == 2 && !byPid(second, 600).contains("newChildren"), "new children are counted per parent");
+    const auto parents = second["processCreation"].toObject()["parents"].toArray();
+    check(!parents.isEmpty() && parents[0].toObject()["pid"].toInt() == 501 && parents[0].toObject()["own"].toBool(),
+          "the spawning parent leads the creation summary");
+    check(second["processCreation"].toObject()["newSinceLastScan"].toInt() == 2, "new processes since the last scan are counted");
 }
 void testFixture() {
     QTemporaryDir temp;
@@ -425,10 +464,45 @@ void testProcessIO() {
 }
 }
 
+// A middle process and its child can both end within one interval; their CPU then
+// reaches the nearest surviving ancestor. What could only predate the interval is
+// bounded by how long the whole machine was busy.
+void testChildSubtreeAndCap() {
+    QTemporaryDir temp;
+    check(temp.isValid(), "subtree fixture");
+    const QString proc = temp.path() + "/proc", sys = temp.path() + "/sys";
+    auto put = [&](qint64 pid, qint64 parent, quint64 ticks, quint64 start, quint64 childTicks) {
+        write(proc + '/' + QString::number(pid) + "/stat", stat(pid, parent, ticks, start, 1, "worker", 0, "S", -1, childTicks));
+    };
+    auto machine = [&](quint64 busy) { write(proc + "/stat", "cpu  " + QByteArray::number(busy) + " 0 0 100000 0 0 0 0 0 0\n"); };
+    machine(1000);
+    put(600, 1, 0, 6000, 0);        // reference
+    put(801, 1, 5, 8010, 0);        // survives
+    put(802, 801, 10, 8020, 0);     // a make: ends within the interval
+    put(803, 802, 400, 8030, 0);    // its compiler, seen at 400 ticks, ends too
+    put(901, 1, 5, 9010, 0);        // collects something that ran before the interval
+    LinuxSampler sampler(proc, sys);
+    sampler.sample();
+    QThread::msleep(30);
+    machine(1600);
+    put(600, 1, 100, 6000, 0);
+    QDir(proc + "/802").removeRecursively(); QDir(proc + "/803").removeRecursively();
+    put(801, 1, 5, 8010, 10 + 450);  // the make (10) and the compiler's whole 450
+    put(901, 1, 5, 9010, 100000);
+    const auto second = sampler.sample();
+    const double reference = byPid(second, 600)["cpuPercent"].toDouble();
+    near(byPid(second, 801)["childCpuPercent"].toDouble() / reference, .5,
+         "a subtree ending together credits its surviving ancestor only with what was never seen");
+    near(byPid(second, 901)["childCpuPercent"].toDouble() / reference, 6,
+         "children's CPU is bounded by how long the whole machine was busy in the interval");
+}
+
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     testFixture();
     testFreshProcessPaths();
+    testChildAttribution();
+    testChildSubtreeAndCap();
     testProcessIO();
     testDiskWait();
     testPressureVmAndFaults();

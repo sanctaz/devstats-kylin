@@ -29,7 +29,7 @@ constexpr qint64 Retention = 31LL * 86400;
 constexpr int PayloadLimit = 128 * 1024;
 QJsonValue unknown() { return QJsonValue(QJsonValue::Null); }
 bool measured(const QJsonValue &v) { return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble() >= 0; }
-double number(const QJsonObject &o, const char *key) { const auto v = o[key]; return measured(v) ? v.toDouble() : -1; }
+double number(const QJsonObject &o, const char *key) { const auto v = o[QLatin1String(key)]; return measured(v) ? v.toDouble() : -1; }
 QJsonObject fields(const QJsonObject &source, const QStringList &keys) {
     QJsonObject result;
     for (const auto &key : keys) result[key] = measured(source[key]) ? source[key] : unknown();
@@ -127,20 +127,23 @@ QJsonObject processEvidence(const QJsonObject &snapshot) {
         const auto source = value.toObject();
         const double pid = number(source, "pid");
         if (pid <= 0) { partial = true; continue; }
-        QString key = source["applicationIdentity"].toString();
-        if (key.isEmpty()) key = QStringLiteral("pid:%1:%2").arg(pid, 0, 'f', 0).arg(source["startTicks"].toDouble(), 0, 'f', 0);
-        auto app = aggregates.find(key);
-        if (app == aggregates.end()) {
+        QString key = source[QLatin1String("applicationIdentity")].toString();
+        if (key.isEmpty()) key = QStringLiteral("pid:%1:%2").arg(pid, 0, 'f', 0).arg(source[QLatin1String("startTicks")].toDouble(), 0, 'f', 0);
+        // DevStats stays in the process list but never becomes the incident's named
+        // application: its window and diagnosis cost CPU while someone investigates.
+        const bool self = source[QLatin1String("self")].toBool();
+        auto app = self ? aggregates.end() : aggregates.find(key);
+        if (!self && app == aggregates.end()) {
             Aggregate aggregate; aggregate.row.identity = digest(key);
             app = aggregates.insert(key, aggregate);
         }
         EvidenceRow process; process.pid = pid; process.start = number(source, "startTicks");
-        process.identity = app->row.identity; process.name = safeName(source["name"].toString());
-        app->row.name = appNames.value(key, process.name);
-        ++app->row.processCount;
+        process.identity = self ? digest(key) : app->row.identity; process.name = safeName(source[QLatin1String("name")].toString());
+        if (!self) { app->row.name = appNames.value(key, process.name); ++app->row.processCount; }
         for (int m = 0; m < 4; ++m) {
             process.metrics[m] = number(source, metrics[m]);
             if (process.metrics[m] >= 0) {
+                if (self) continue;
                 if (!app->known[m]) app->row.metrics[m] = 0;
                 app->row.metrics[m] += process.metrics[m]; ++app->known[m];
             } else process.partial = true;
@@ -154,12 +157,12 @@ QJsonObject processEvidence(const QJsonObject &snapshot) {
         const auto source = value.toObject();
         const double pid = number(source, "pid");
         if (pid <= 0) continue;
-        const QString name = safeName(source["name"].toString());
+        const QString name = safeName(source[QLatin1String("name")].toString());
         const QString key = QStringLiteral("system:") + name.section('/', 0, 0);
         auto app = aggregates.find(key);
         if (app == aggregates.end()) {
             Aggregate aggregate; aggregate.row.identity = digest(key);
-            aggregate.row.owner = safeName(source["owner"].toString());
+            aggregate.row.owner = safeName(source[QLatin1String("owner")].toString());
             aggregate.row.name = name.section('/', 0, 0);
             app = aggregates.insert(key, aggregate);
         }

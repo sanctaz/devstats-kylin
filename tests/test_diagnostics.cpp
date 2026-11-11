@@ -77,6 +77,25 @@ void cpu() {
     set(s, "cpu", "usage", .97); set(s, "cpu", "load", QJsonArray{13});
     check(finding(diagnoseSystem(s), "cpu")["severity"] == "critical", "saturated CPU with a long queue is serious");
 
+    // DevStats never names itself; its own cost is noted once instead.
+    auto self = process("devstats", 70); self["self"] = true;
+    s["processes"] = QJsonArray{self, process("worker", 60)};
+    d = diagnoseSystem(s);
+    check(finding(d, "cpu")["title"].toString().contains("worker") && !finding(d, "cpu")["title"].toString().contains("devstats"),
+          "DevStats is not named as the busiest program");
+    bool noted = false;
+    for (const auto &line : d["coverage"].toArray()) noted |= line.toString().contains(QStringLiteral("DevStats 自身此刻占用 0.7 核"));
+    check(noted, "DevStats' own cost is stated in the data notes");
+    for (const auto &row : rankSuspects(s, "cpu")) check(row.toObject()["name"] != "devstats", "DevStats is not a suspect");
+    // A parent whose short-lived children used the CPU is named with them.
+    auto shell = process("bash", 5); shell["childCpuPercent"] = 96;
+    s["processes"] = QJsonArray{shell, process("worker", 60)};
+    check(finding(diagnoseSystem(s), "cpu")["title"].toString().contains(QStringLiteral("bash（1.0 核，含它启动的短暂子进程）")),
+          "children's CPU is credited to the parent that started them");
+    check(rankSuspects(s, "cpu")[0].toObject()["name"] == "bash" &&
+          rankSuspects(s, "cpu")[0].toObject()["reason"].toString().contains(QStringLiteral("其中短暂子进程约 1.0 核")),
+          "suspects rank a spawning parent by its children's CPU");
+
     // Run-queue wait replaces CPU PSI where the kernel has none.
     auto noPsi = healthy(); noPsi["pressure"] = QJsonObject{};
     set(noPsi, "cpu", "usage", .7); set(noPsi, "cpu", "load", QJsonArray{2}); set(noPsi, "cpu", "runQueueWait", .6);
@@ -173,8 +192,33 @@ void others() {
 
     auto forks = healthy(); set(forks, "cpu", "usage", .6); set(forks, "cpu", "forksPerSecond", 300); forks["attributedCpuPercent"] = 80;
     check(!finding(diagnoseSystem(forks), "forks").isEmpty(), "CPU no live process explains points at short-lived processes");
-    forks["attributedCpuPercent"] = 470;
+    check(finding(diagnoseSystem(forks), "forks")["suggestion"].toString().contains(QStringLiteral("脚本")),
+          "without a known source the advice stays general");
+    forks["processCreation"] = QJsonObject{{"parents", QJsonArray{
+        QJsonObject{{"pid", 77}, {"name", "devstats"}, {"self", true}, {"own", true}, {"childCpuPercent", 400}, {"newChildren", 50}},
+        QJsonObject{{"pid", 4321}, {"name", "bash"}, {"own", true}, {"childCpuPercent", 96}, {"newChildren", 40}}}}};
+    auto named = finding(diagnoseSystem(forks), "forks");
+    check(named["evidence"].toString().contains(QStringLiteral("主要来自 bash（PID 4321）：它启动的短暂子进程用了约 1.0 核，两次扫描间新出现 40 个子进程")) &&
+          named["suggestion"].toString().contains(QStringLiteral("自动查杀")) && named["action"] == "suspect",
+          "a process creation storm names its source and offers to act on it");
+    forks["processCreation"] = QJsonObject{{"parents", QJsonArray{
+        QJsonObject{{"pid", 900}, {"name", "secagent"}, {"own", false}, {"owner", "root"}, {"childCpuPercent", 120}, {"newChildren", 3}}}}};
+    named = finding(diagnoseSystem(forks), "forks");
+    check(named["evidence"].toString().contains(QStringLiteral("secagent（PID 900，root）")) && named["suggestion"].toString().contains(QStringLiteral("管理员")),
+          "a root source is named, with advice that only an administrator can stop it");
+    forks.remove("processCreation"); forks["attributedCpuPercent"] = 470;
     check(finding(diagnoseSystem(forks), "forks").isEmpty(), "forks with fully attributed CPU are fine");
+    // A loop running one command after another: under a core unattributed, but its source is known.
+    auto loop = healthy(); set(loop, "cpu", "usage", .29); set(loop, "cpu", "forksPerSecond", 236); loop["attributedCpuPercent"] = 25;
+    auto shellLoop = process("bash", 13); shellLoop["childCpuPercent"] = 89; loop["processes"] = QJsonArray{shellLoop};
+    loop["processCreation"] = QJsonObject{{"parents", QJsonArray{
+        QJsonObject{{"pid", 55}, {"name", "bash"}, {"own", true}, {"childCpuPercent", 89}, {"newChildren", 0}}}}};
+    const auto loopDiagnosis = diagnoseSystem(loop);
+    check(finding(loopDiagnosis, "forks")["evidence"].toString().contains(QStringLiteral("主要来自 bash（PID 55）")),
+          "a known source below a full core is still named");
+    check(finding(loopDiagnosis, "singleCore").isEmpty(), "children's CPU never makes the parent look like a pegged single thread");
+    set(loop, "cpu", "forksPerSecond", 20);
+    check(finding(diagnoseSystem(loop), "forks").isEmpty(), "an occasional command is not a storm");
 
     auto compositor = healthy(); compositor["systemProcesses"] = QJsonArray{system("Xorg", 90)};
     check(finding(diagnoseSystem(compositor), "compositor")["title"].toString().contains("Xorg"), "busy display server is named");

@@ -351,6 +351,20 @@ void testLongNamesAndWallClock() {
     peak.observe(first); first["timestamp"] = epoch + 2; first["monotonicSeconds"] = 2; first["processMonotonicSeconds"] = 2; peak.observe(first);
     for (int i = 2; i < 5; ++i) { auto normal = sample(i * 2); normal["processes"] = QJsonArray{process(2,"idle-recovery",1,10)}; peak.observe(normal); }
     check(only(peak)["strongestApplication"].toObject()["cpuPercent"].toDouble() == 200, "idle recovery application never replaces abnormal peak activity");
+    // DevStats' own window and diagnosis cost CPU while someone investigates; the
+    // incident keeps it in the process list but never names it.
+    QTemporaryDir selfTemp; IncidentRecorder selfRecorder(selfTemp.path());
+    for (int i = 0; i < 2; ++i) {
+        auto busy = sample(i * 2, "cpu"); auto self = process(7, "exe:/opt/devstats/devstats", 300, 500); self["self"] = true;
+        busy["processes"] = QJsonArray{self, process(8, "exact-app", 150, 500)}; selfRecorder.observe(busy);
+    }
+    selfRecorder.flush();
+    const auto selfRow = only(selfRecorder);
+    check(selfRow["strongestApplication"].toObject()["cpuPercent"].toDouble() == 150, "DevStats is never the incident's named application");
+    bool listed = false;
+    for (const auto &value : selfRecorder.detail(selfRow["id"].toString())["witnesses"].toArray())
+        for (const auto &row : value.toObject()["topProcesses"].toArray()) listed |= row.toObject()["pid"].toDouble() == 7;
+    check(listed, "DevStats remains visible in the incident's process list");
 }
 qint64 statusKiB(const QByteArray &key) {
     QFile file("/proc/self/status");

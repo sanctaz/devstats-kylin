@@ -14,10 +14,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
@@ -63,18 +65,35 @@ bool inside(const QString &path, const QString &root) {
     return path == root || (root == QStringLiteral("/") ? path.startsWith('/')
                            : path.startsWith(root + '/'));
 }
-QString linkTarget(const QString &path, QHash<QString, QString> &paths) {
-    const QByteArray encoded = QFile::encodeName(path);
+// /proc/PID/exe and cwd are kernel links whose target is built from directory
+// entries, so it never contains a symlink; resolving it again only costs one
+// lstat per path component for every process on every scan.
+QString linkTarget(const QByteArray &encoded) {
     char target[16384];
     const ssize_t length = ::readlink(encoded.constData(), target, sizeof(target));
     if (length <= 0 || size_t(length) == sizeof(target)) return {};
     QString result = QFile::decodeName(QByteArray::fromRawData(target, int(length)));
     if (result.endsWith(QStringLiteral(" (deleted)"))) result.chop(10);
-    const auto found = paths.constFind(result);
-    if (found != paths.cend()) return found.value();
-    const QString normalized = normalizedPath(result);
-    paths.insert(result, normalized);
-    return normalized;
+    return QDir::isAbsolutePath(result) ? QDir::cleanPath(result) : QString();
+}
+// Numeric /proc entries without QDir's sorting and per-entry metadata.
+QVector<qint64> processIds(const QString &proc) {
+    QVector<qint64> pids;
+    DIR *directory = ::opendir(QFile::encodeName(proc).constData());
+    if (!directory) return pids;
+    while (const dirent *entry = ::readdir(directory)) {
+        const char *name = entry->d_name;
+        if (*name < '1' || *name > '9') continue;
+        qint64 pid = 0;
+        bool numeric = true;
+        for (const char *c = name; *c; ++c) {
+            if (*c < '0' || *c > '9' || pid > (INT64_MAX - 9) / 10) { numeric = false; break; }
+            pid = pid * 10 + (*c - '0');
+        }
+        if (numeric) pids.append(pid);
+    }
+    ::closedir(directory);
+    return pids;
 }
 QString unescapeMount(QString path) {
     path.replace(QStringLiteral("\\040"), QStringLiteral(" "));
@@ -143,6 +162,12 @@ struct Process {
     quint64 blkio = 0;
     bool hasBlkio = false;
     QJsonValue ioWait = unavailable();
+    // CPU of children this process has waited for (fields 16 and 17), and how many
+    // processes appeared under it since the previous scan.
+    quint64 childTicks = 0;
+    bool hasChildTicks = false;
+    double childCpu = 0;
+    int newChildren = 0;
 };
 // Only counters survive a scan. In particular, argv and path metadata must not
 // remain allocated for every process while the next generation is collected.
@@ -151,42 +176,109 @@ struct ProcessCounters {
     bool hasMajorFaults = false, hasRead = false, hasWrite = false;
     quint64 blkio = 0;
     bool hasBlkio = false;
+    qint64 parent = 0;
+    quint64 childTicks = 0;
+    bool hasChildTicks = false;
 };
 constexpr quint64 KernelThreadFlag = 0x00200000; // PF_KTHREAD in /proc/PID/stat flags.
+// Fields after the command name, located in place: the scan parses hundreds of
+// these lines per pass, and splitting each into some fifty strings dominated it.
+struct StatFields {
+    const char *start[40];
+    int length[40];
+    int count = 0;
+    bool unsignedAt(int index, quint64 &result) const {
+        if (index >= count || length[index] == 0) return false;
+        quint64 value = 0;
+        for (int i = 0; i < length[index]; ++i) {
+            const char c = start[index][i];
+            if (c < '0' || c > '9' || value > (UINT64_MAX - 9) / 10) return false;
+            value = value * 10 + quint64(c - '0');
+        }
+        result = value;
+        return true;
+    }
+};
 bool processStat(const QByteArray &data, Process &process) {
     const int first = data.indexOf('('), last = data.lastIndexOf(')');
     if (first < 1 || last <= first) return false;
-    bool valid = false;
-    process.pid = data.left(first).trimmed().toLongLong(&valid);
-    if (!valid || process.pid <= 0) return false;
-    process.name = QString::fromLocal8Bit(data.mid(first + 1, last - first - 1));
-    const auto values = fields(data.mid(last + 1));
-    if (values.size() < 22) return false;
-    if (values[0].size() == 1) process.state = QString::fromLatin1(values[0]);
-    process.hasMajorFaults = number(values[9], process.majorFaults);
-    number(values[6], process.flags);
-    number(values[17], process.threads);
-    process.parent = values[1].toLongLong(&valid);
-    if (!valid || process.parent < 0) return false;
-    quint64 user = 0, system = 0, rss = 0;
-    if (!number(values[11], user) || !number(values[12], system) ||
-        !number(values[19], process.start) || !number(values[21], rss)) return false;
+    quint64 pid = 0;
+    StatFields head;
+    head.start[0] = data.constData(); head.length[0] = first; head.count = 1;
+    while (head.length[0] > 0 && head.start[0][head.length[0] - 1] == ' ') --head.length[0];
+    if (!head.unsignedAt(0, pid) || pid == 0 || pid > quint64(INT64_MAX)) return false;
+    process.pid = qint64(pid);
+    process.name = QString::fromLocal8Bit(data.constData() + first + 1, last - first - 1);
+    StatFields values;
+    const char *cursor = data.constData() + last + 1, *end = data.constData() + data.size();
+    while (values.count < 40) {
+        while (cursor < end && (*cursor == ' ' || *cursor == '\n' || *cursor == '\t')) ++cursor;
+        if (cursor >= end) break;
+        values.start[values.count] = cursor;
+        while (cursor < end && *cursor != ' ' && *cursor != '\n' && *cursor != '\t') ++cursor;
+        values.length[values.count] = int(cursor - values.start[values.count]);
+        ++values.count;
+    }
+    if (values.count < 22) return false;
+    if (values.length[0] == 1) process.state = QString(QLatin1Char(values.start[0][0]));
+    process.hasMajorFaults = values.unsignedAt(9, process.majorFaults);
+    values.unsignedAt(6, process.flags);
+    values.unsignedAt(17, process.threads);
+    quint64 parent = 0, user = 0, system = 0, rss = 0;
+    if (!values.unsignedAt(1, parent) || parent > quint64(INT64_MAX)) return false;
+    process.parent = qint64(parent);
+    if (!values.unsignedAt(11, user) || !values.unsignedAt(12, system) ||
+        !values.unsignedAt(19, process.start) || !values.unsignedAt(21, rss)) return false;
     process.ticks = user + system;
     process.rss = rss;
-    if (values.size() > 39) process.hasBlkio = number(values[39], process.blkio);
+    quint64 childUser = 0, childSystem = 0;
+    process.hasChildTicks = values.unsignedAt(13, childUser) && values.unsignedAt(14, childSystem);
+    process.childTicks = process.hasChildTicks ? childUser + childSystem : 0;
+    if (values.count > 39) process.hasBlkio = values.unsignedAt(39, process.blkio);
     return true;
 }
+// read_bytes and write_bytes from /proc/PID/io, without splitting every line.
+bool ioCounter(const QByteArray &data, const char *key, quint64 &result) {
+    int at = data.indexOf(key);
+    while (at > 0 && data[at - 1] != '\n') at = data.indexOf(key, at + 1);
+    if (at < 0) return false;
+    int i = at + int(qstrlen(key));
+    while (i < data.size() && data[i] == ' ') ++i;
+    StatFields value;
+    value.start[0] = data.constData() + i; value.count = 1;
+    int length = 0;
+    while (i + length < data.size() && data[i + length] >= '0' && data[i + length] <= '9') ++length;
+    value.length[0] = length;
+    return value.unsignedAt(0, result);
+}
+ProcessCounters countersOf(const Process &process) {
+    return {process.start, process.ticks, process.majorFaults, process.ioRead, process.ioWrite, process.rss,
+            process.hasMajorFaults, process.hasRead, process.hasWrite, process.blkio, process.hasBlkio,
+            process.parent, process.childTicks, process.hasChildTicks};
+}
 QJsonObject processJson(const Process &process, long pageSize) {
-    return {{"pid", double(process.pid)}, {"parentPID", double(process.parent)},
-            {"startTicks", double(process.start)}, {"name", process.name},
-            {"executablePath", process.executable},
-            {"projectPath", process.project}, {"cpuPercent", process.cpu},
-            {"state", process.state.isEmpty() ? unavailable() : QJsonValue(process.state)},
-            {"majorFaultsPerSecond", process.majorFaultRate}, {"threads", double(process.threads)},
-            {"ioReadBytesPerSecond", process.readRate}, {"ioWriteBytesPerSecond", process.writeRate}, {"ioWaitPercent", process.ioWait},
-            {"memoryGrowthBytesPerSecond", process.memoryGrowth},
-            {"waitChannel", process.waitChannel.isEmpty() ? unavailable() : QJsonValue(process.waitChannel)},
-            {"memoryBytes", double(process.rss) * double(pageSize)}};
+    // Keys in ascending order: QJsonObject keeps them sorted, so each insert appends.
+    return {{QStringLiteral("cpuPercent"), process.cpu},
+            {QStringLiteral("executablePath"), process.executable},
+            {QStringLiteral("ioReadBytesPerSecond"), process.readRate},
+            {QStringLiteral("ioWaitPercent"), process.ioWait},
+            {QStringLiteral("ioWriteBytesPerSecond"), process.writeRate},
+            {QStringLiteral("majorFaultsPerSecond"), process.majorFaultRate},
+            {QStringLiteral("memoryBytes"), double(process.rss) * double(pageSize)},
+            {QStringLiteral("memoryGrowthBytesPerSecond"), process.memoryGrowth},
+            {QStringLiteral("name"), process.name},
+            {QStringLiteral("parentPID"), double(process.parent)},
+            {QStringLiteral("pid"), double(process.pid)},
+            {QStringLiteral("projectPath"), process.project},
+            {QStringLiteral("startTicks"), double(process.start)},
+            {QStringLiteral("state"), process.state.isEmpty() ? unavailable() : QJsonValue(process.state)},
+            {QStringLiteral("threads"), double(process.threads)},
+            {QStringLiteral("waitChannel"), process.waitChannel.isEmpty() ? unavailable() : QJsonValue(process.waitChannel)}};
+}
+// Only present when non-zero, so idle rows stay as small as before.
+void addChildren(QJsonObject &json, const Process &process) {
+    if (process.childCpu > 0) json["childCpuPercent"] = process.childCpu;
+    if (process.newChildren > 0) json["newChildren"] = process.newChildren;
 }
 }
 
@@ -203,6 +295,16 @@ struct LinuxSampler::Impl {
     quint64 previousContextSwitches = 0, previousForks = 0, previousSchedWait = 0, previousSchedRun = 0;
     qint64 previousStatTime = 0, previousSchedTime = 0;
     QHash<qint64, ProcessCounters> previousProcesses;
+    // Project markers change rarely; re-probing every directory on every scan does not.
+    struct Discovery { QString project; qint64 expires = 0; };
+    QHash<QString, Discovery> discoveries;
+    const qint64 selfPid = ::getpid();
+    const uid_t ownUid = ::getuid();
+    QJsonObject cachedProcessCreation;
+    // Whole-machine busy ticks at the previous process scan: no parent's children can
+    // have used more CPU than the machine had busy during the same interval.
+    quint64 previousBusyTicks = 0;
+    bool hasPreviousBusy = false;
     QHash<QByteArray, quint64> previousVm;
     qint64 previousVmTime = 0;
     qint64 previousProcessTime = 0, diskRefreshTime = -1;
@@ -244,6 +346,8 @@ struct LinuxSampler::Impl {
         quint64 contextSwitches = 0, forkCount = 0;
         bool hasContextSwitches = false, hasForks = false;
         for (const auto &line : readFile(proc + "/stat").split('\n')) {
+            // Per-interrupt counts run to thousands of numbers and are not used.
+            if (line.startsWith("intr ") || line.startsWith("softirq ")) continue;
             const auto parts = fields(line);
             if (parts.size() == 2 && (parts[0] == "procs_running" || parts[0] == "procs_blocked")) {
                 quint64 value = 0;
@@ -698,23 +802,41 @@ struct LinuxSampler::Impl {
             for (const auto &path : paths) if (inside(path, root)) return root;
         return {};
     }
-    QString discoveredProject(const QString &cwd, QHash<QString, QString> &cache) const {
+    // Busy ticks of all CPUs together, from the aggregate line of /proc/stat.
+    bool machineBusyTicks(quint64 &busy) const {
+        const QByteArray head = readSmall(QFile::encodeName(proc) + "/stat");
+        const int end = head.indexOf('\n');
+        if (!head.startsWith("cpu ") || end < 0) return false;
+        CpuCounter counter;
+        if (!cpuCounter(fields(head.left(end)), counter) || counter.total < counter.idle) return false;
+        busy = counter.total - counter.idle;
+        return true;
+    }
+
+    // Positive and negative answers are both kept for 30 seconds.
+    QString discoveredProject(const QString &cwd, qint64 now) {
         if (cwd.isEmpty()) return {};
-        const auto found = cache.constFind(cwd);
-        if (found != cache.cend()) return found.value();
+        const auto found = discoveries.constFind(cwd);
+        if (found != discoveries.cend() && found->expires > now) return found->project;
+        static const char *const markers[] = {".git", "package.json", "CMakeLists.txt", "pyproject.toml", "Cargo.toml", "go.mod",
+                                              "build.gradle", "build.gradle.kts", "pom.xml", "Package.swift"};
         QString path = cwd, result;
-        const QStringList markers{".git", "package.json", "CMakeLists.txt", "pyproject.toml", "Cargo.toml", "go.mod", "build.gradle", "build.gradle.kts", "pom.xml", "Package.swift"};
         for (int depth = 0; depth < 12 && path != "/"; ++depth) {
-            for (const auto &marker : markers) {
+            const QByteArray base = QFile::encodeName(path) + '/';
+            for (const char *marker : markers) {
                 // Exact marker probes only; no recursive directory traversal.
-                if (QFileInfo::exists(path + '/' + marker)) { result = path; break; }
+                if (::access((base + marker).constData(), F_OK) == 0) { result = path; break; }
             }
             if (!result.isEmpty()) break;
-            const QString parent = QFileInfo(path).dir().absolutePath();
-            if (parent == path) break;
-            path = parent;
+            const int slash = path.lastIndexOf('/');
+            if (slash <= 0) break;
+            path.truncate(slash);
         }
-        cache.insert(cwd, result);
+        if (discoveries.size() >= 4096) {
+            for (auto it = discoveries.begin(); it != discoveries.end();) it = it->expires <= now ? discoveries.erase(it) : std::next(it);
+            if (discoveries.size() >= 4096) discoveries.clear();
+        }
+        discoveries.insert(cwd, {result, now + 30LL * 1000 * 1000 * 1000});
         return result;
     }
 
@@ -722,9 +844,8 @@ struct LinuxSampler::Impl {
         QElapsedTimer duration; duration.start();
         QHash<qint64, Process> current;
         QHash<qint64, ProcessCounters> counters;
-        // Read every proc symlink afresh; only share canonicalization within
-        // this scan so executable replacements and cwd changes stay visible.
-        QHash<QString, QString> projectCache, paths;
+        // Every proc link and file is read afresh, so exec, chdir and argv changes
+        // are visible on the next scan.
         struct Other { Process process; uint uid; };
         QVector<Other> others;
         int running = 0, blocked = 0, zombie = 0;
@@ -749,16 +870,13 @@ struct LinuxSampler::Impl {
             if (process.state == "R") ++running; else if (process.state == "D") ++blocked; else if (process.state == "Z") ++zombie;
             if (process.cpu.isDouble()) { attributed += process.cpu.toDouble(); anyCpu = true; }
         };
-        const auto pids = QDir(proc).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-        for (const auto &entry : pids) {
-            bool numeric = false;
-            const qint64 pid = entry.toLongLong(&numeric);
-            if (!numeric || pid <= 0) continue;
-            const QString path = proc + '/' + entry;
-            const QByteArray encodedPath = QFile::encodeName(path);
+        const QByteArray encodedProc = QFile::encodeName(proc) + '/';
+        for (const qint64 pid : processIds(proc)) {
+            const QString path = proc + '/' + QString::number(pid);
+            const QByteArray encodedPath = encodedProc + QByteArray::number(pid);
             struct stat owner {};
             if (::stat(encodedPath.constData(), &owner)) continue;
-            if (owner.st_uid != ::getuid()) {
+            if (owner.st_uid != ownUid) {
                 // /proc/PID/stat is world readable, so root daemons and kernel threads
                 // (Xorg, kswapd0, jbd2, security agents) still appear as stall suspects.
                 // Only the counters are read; their cwd, exe and argv stay private.
@@ -767,25 +885,21 @@ struct LinuxSampler::Impl {
                 const auto old = previousProcesses.constFind(pid);
                 other.process.cpu = cpuSince(other.process, old == previousProcesses.cend() ? nullptr : &old.value());
                 other.process.ioWait = waitSince(other.process, old == previousProcesses.cend() ? nullptr : &old.value());
-                counters.insert(pid, {other.process.start, other.process.ticks, 0, 0, 0, other.process.rss, false, false, false,
-                                      other.process.blkio, other.process.hasBlkio});
+                counters.insert(pid, countersOf(other.process));
                 tally(other.process);
                 others.append(other);
                 continue;
             }
             Process process;
-            if (!processStat(readFile(path + "/stat", 16384), process) || process.pid != pid) continue;
-            process.cwd = linkTarget(path + "/cwd", paths);
-            process.executable = linkTarget(path + "/exe", paths);
+            if (!processStat(readSmall(encodedPath + "/stat"), process) || process.pid != pid) continue;
+            process.cwd = linkTarget(encodedPath + "/cwd");
+            process.executable = linkTarget(encodedPath + "/exe");
             const QByteArray command = projectRoots.isEmpty() ? QByteArray() : readFile(path + "/cmdline", 65536);
-            for (const auto &line : readFile(path + "/io", 4096).split('\n')) {
-                const auto parts = fields(line);
-                if (parts.size() != 2) continue;
-                if (parts[0] == "read_bytes:") process.hasRead = number(parts[1], process.ioRead);
-                if (parts[0] == "write_bytes:") process.hasWrite = number(parts[1], process.ioWrite);
-            }
+            const QByteArray io = readSmall(encodedPath + "/io");
+            process.hasRead = ioCounter(io, "read_bytes:", process.ioRead);
+            process.hasWrite = ioCounter(io, "write_bytes:", process.ioWrite);
             Process checked;
-            if (!processStat(readFile(path + "/stat", 16384), checked) || checked.start != process.start || checked.pid != pid) continue;
+            if (!processStat(readSmall(encodedPath + "/stat"), checked) || checked.start != process.start || checked.pid != pid) continue;
             const auto old = previousProcesses.constFind(pid);
             process.cpu = cpuSince(process, old == previousProcesses.cend() ? nullptr : &old.value());
             process.ioWait = waitSince(process, old == previousProcesses.cend() ? nullptr : &old.value());
@@ -799,11 +913,67 @@ struct LinuxSampler::Impl {
                 if (process.hasWrite && old->hasWrite) process.writeRate = byteRate(process.ioWrite, old->ioWrite, now - previousProcessTime);
             }
             process.project = projectRoots.isEmpty() ? QString() : explicitProject(process.cwd, command);
-            if (process.project.isEmpty()) process.project = discoveredProject(process.cwd, projectCache);
-            counters.insert(pid, {process.start, process.ticks, process.majorFaults, process.ioRead, process.ioWrite, process.rss,
-                                  process.hasMajorFaults, process.hasRead, process.hasWrite, process.blkio, process.hasBlkio});
+            if (process.project.isEmpty()) process.project = discoveredProject(process.cwd, now);
+            counters.insert(pid, countersOf(process));
             tally(process);
             current.insert(pid, process);
+        }
+        // A child's CPU reaches its parent's counters only once the parent waits for it.
+        // Children seen alive earlier already showed their own CPU, so what they had used
+        // at their last observation is taken back out; the rest was never visible
+        // anywhere else. This is the CPU of short-lived processes, by the parent.
+        cachedProcessCreation = {};
+        quint64 busy = 0;
+        const bool hasBusy = machineBusyTicks(busy);
+        if (previousProcessTime > 0 && now > previousProcessTime) {
+            QHash<qint64, qint64> childDelta;
+            QHash<qint64, int> born;
+            int newProcesses = 0;
+            for (auto it = counters.cbegin(); it != counters.cend(); ++it) {
+                const auto old = previousProcesses.constFind(it.key());
+                if (old == previousProcesses.cend() || old->start != it->start) { ++born[it->parent]; ++newProcesses; continue; }
+                if (it->hasChildTicks && old->hasChildTicks && it->childTicks >= old->childTicks)
+                    childDelta.insert(it.key(), qint64(it->childTicks - old->childTicks));
+            }
+            auto alive = [&](qint64 pid, quint64 start) {
+                const auto found = counters.constFind(pid);
+                return found != counters.cend() && found->start == start;
+            };
+            for (auto old = previousProcesses.cbegin(); old != previousProcesses.cend(); ++old) {
+                if (alive(old.key(), old->start)) continue;
+                // A whole subtree can end within one interval (make reaps its compilers,
+                // then exits itself): the CPU then reaches the nearest ancestor still alive.
+                qint64 ancestor = old->parent;
+                for (int depth = 0; depth < 64; ++depth) {
+                    const auto up = previousProcesses.constFind(ancestor);
+                    if (up == previousProcesses.cend() || alive(ancestor, up->start)) break;
+                    ancestor = up->parent;
+                }
+                const auto parent = childDelta.find(ancestor);
+                if (parent != childDelta.end()) *parent -= qint64(old->ticks + (old->hasChildTicks ? old->childTicks : 0));
+            }
+            const double scale = 1e11 / (double(ticksPerSecond) * double(now - previousProcessTime));
+            const double cap = hasBusy && hasPreviousBusy && busy >= previousBusyTicks ? double(busy - previousBusyTicks) * scale
+                                                                                       : std::numeric_limits<double>::infinity();
+            QVector<QJsonObject> parents;
+            auto apply = [&](Process &process, bool own, uint uid) {
+                process.childCpu = std::min(cap, double(std::max<qint64>(0, childDelta.value(process.pid))) * scale);
+                process.newChildren = born.value(process.pid);
+                // kthreadd's worker threads come and go all the time and are never actionable.
+                if ((process.childCpu >= 1 || process.newChildren >= 2) && !(process.flags & KernelThreadFlag))
+                    parents.append({{"pid", double(process.pid)}, {"startTicks", double(process.start)}, {"name", process.name},
+                                    {"owner", own ? QString() : ownerName(uid)}, {"own", own}, {"self", process.pid == selfPid},
+                                    {"childCpuPercent", process.childCpu}, {"newChildren", process.newChildren}});
+            };
+            for (auto &process : current) apply(process, true, 0);
+            for (auto &other : others) apply(other.process, false, other.uid);
+            std::sort(parents.begin(), parents.end(), [](const QJsonObject &a, const QJsonObject &b) {
+                const double left = a["childCpuPercent"].toDouble(), right = b["childCpuPercent"].toDouble();
+                return left != right ? left > right : a["newChildren"].toInt() > b["newChildren"].toInt();
+            });
+            QJsonArray top;
+            for (int i = 0; i < std::min(3, int(parents.size())); ++i) top.append(parents[i]);
+            cachedProcessCreation = {{"parents", top}, {"newSinceLastScan", newProcesses}};
         }
         // Bound inherited chains independently of process-tree depth to avoid a
         // malicious proc fixture (or a very deep tree) exhausting the C++ stack.
@@ -833,7 +1003,9 @@ struct LinuxSampler::Impl {
         cachedProcesses = {}; cachedGroups = {};
         QMap<QString, QJsonArray> grouped;
         for (const auto &process : ordered) {
-            const auto json = processJson(process, pageSize);
+            auto json = processJson(process, pageSize);
+            addChildren(json, process);
+            if (process.pid == selfPid) json["self"] = true;
             cachedProcesses.append(json);
             if (!process.project.isEmpty()) grouped[process.project].append(json);
         }
@@ -858,6 +1030,7 @@ struct LinuxSampler::Impl {
             if (kept.contains(other.process.pid)) return;
             kept.insert(other.process.pid);
             auto json = processJson(other.process, pageSize);
+            addChildren(json, other.process);
             json["owner"] = ownerName(other.uid);
             json["kernelThread"] = bool(other.process.flags & KernelThreadFlag);
             cachedSystemProcesses.append(json);
@@ -875,10 +1048,16 @@ struct LinuxSampler::Impl {
             return a.process.ioWait.toDouble(-1) > b.process.ioWait.toDouble(-1);
         });
         for (int i = 0; i < qMin(8, others.size()) && others[i].process.ioWait.toDouble(-1) >= 1; ++i) keep(others[i]);
+        // A root daemon that keeps spawning short-lived children is idle itself.
+        std::sort(others.begin(), others.end(), [](const Other &a, const Other &b) {
+            return a.process.childCpu != b.process.childCpu ? a.process.childCpu > b.process.childCpu : a.process.newChildren > b.process.newChildren;
+        });
+        for (int i = 0; i < qMin(8, others.size()) && (others[i].process.childCpu >= 1 || others[i].process.newChildren >= 2); ++i) keep(others[i]);
         cachedProcessStates = {{"total", cachedProcessCount + others.size()}, {"running", running}, {"blocked", blocked}, {"zombie", zombie}};
         cachedAttributedCpu = anyCpu ? QJsonValue(attributed) : unavailable();
         cachedThermal = thermal();
         previousProcesses = std::move(counters); previousProcessTime = now;
+        previousBusyTicks = busy; hasPreviousBusy = hasBusy;
         return double(duration.nsecsElapsed()) / 1e6;
     }
 };
@@ -906,6 +1085,7 @@ QJsonObject LinuxSampler::sample(bool scanProcesses) {
         {"processMonotonicSeconds", double(d->previousProcessTime) / 1e9},
         {"network", d->network(now)}, {"battery", d->battery()}, {"processes", d->cachedProcesses},
         {"groups", d->cachedGroups}, {"processCount", d->cachedProcessCount}, {"scanMilliseconds", scanTime},
+        {"processCreation", d->cachedProcessCreation}, {"selfPid", double(d->selfPid)},
         {"systemProcesses", d->cachedSystemProcesses}, {"processStates", d->cachedProcessStates},
         {"attributedCpuPercent", d->cachedAttributedCpu}, {"thermal", d->cachedThermal}};
 }

@@ -149,9 +149,9 @@ void RecentActivityTracker::apply(QJsonObject &snapshot) {
     static const QSet<QString> shells = {"sh", "bash", "dash", "zsh", "fish", "ksh", "csh", "tcsh"};
     for (const auto &value : rows) {
         const auto process = value.toObject();
-        const qint64 pid = qint64(process.value("pid").toDouble());
+        const qint64 pid = qint64(process.value(QLatin1String("pid")).toDouble());
         if (pid <= 0) continue;
-        const QString rawPath = process.value("executablePath").toString();
+        const QString rawPath = process.value(QLatin1String("executablePath")).toString();
         auto path = paths.constFind(rawPath);
         if (path == paths.cend()) {
             const QString executable = canonical(rawPath);
@@ -160,11 +160,11 @@ void RecentActivityTracker::apply(QJsonObject &snapshot) {
         }
         const QString &executable = path->executable;
         const QString identity = executable.isEmpty() ? "pid:" + processKey(process) : "exe:" + executable;
-        byPid.insert(pid, {qint64(process.value("parentPID").toDouble()), executable, identity, path->shell});
+        byPid.insert(pid, {qint64(process.value(QLatin1String("parentPID")).toDouble()), executable, identity, path->shell});
         if (metadata.contains(identity)) continue;
         const auto desktop = desktops_.constFind(executable);
         metadata.insert(identity, {{"identity", identity}, {"name", desktop == desktops_.cend()
-            ? (executable.isEmpty() ? process.value("name").toString() : path->name) : desktop->name},
+            ? (executable.isEmpty() ? process.value(QLatin1String("name")).toString() : path->name) : desktop->name},
             {"executablePath", executable}, {"desktopFile", desktop == desktops_.cend() ? QString() : desktop->file}});
     }
     // Only an exact desktop executable ancestor plus an app-private directory
@@ -196,17 +196,17 @@ void RecentActivityTracker::apply(QJsonObject &snapshot) {
     QJsonArray result;
     for (const auto &value : rows) {
         auto process = value.toObject();
-        const qint64 pid = qint64(process.value("pid").toDouble());
+        const qint64 pid = qint64(process.value(QLatin1String("pid")).toDouble());
         const auto indexed = byPid.constFind(pid);
         if (indexed == byPid.cend()) continue;
-        const qint64 identity = qint64(process.value("startTicks").toDouble());
+        const qint64 identity = qint64(process.value(QLatin1String("startTicks")).toDouble());
         const QString application = indexed->application;
         alive.insert(pid);
         auto &entry = entries_[pid];
         if (entry.time >= 0 && entry.application != application) scans[entry.application].complete = false;
         auto &scan = scans[application];
         const bool stable = entry.time >= 0 && entry.identity == identity && entry.application == application;
-        const auto cpu = process.value("cpuPercent");
+        const auto cpu = process.value(QLatin1String("cpuPercent"));
         const bool valid = stable && now > entry.time && now - entry.time <= 30 && measured(cpu);
         if (!valid) {
             entry = Entry(); entry.identity = identity;
@@ -223,9 +223,9 @@ void RecentActivityTracker::apply(QJsonObject &snapshot) {
             const double included = interval.end - std::max(interval.start, now - 60);
             if (included > 0) { processDuration += included; processSeconds += interval.cpuSeconds * included / (interval.end - interval.start); }
         }
-        process["cpuAveragePercent"] = processDuration > 0 ? QJsonValue(processSeconds / processDuration * 100) : unknown();
-        process["cpuObservationSeconds"] = processDuration;
-        process["applicationIdentity"] = application;
+        process[QLatin1String("cpuAveragePercent")] = processDuration > 0 ? QJsonValue(processSeconds / processDuration * 100) : unknown();
+        process[QLatin1String("cpuObservationSeconds")] = processDuration;
+        process[QLatin1String("applicationIdentity")] = application;
         scan.processes.append(process); result.append(process);
         auto &app = applications_[application];
         app.metadata = metadata.value(application); app.lastSeen = now;

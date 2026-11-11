@@ -44,22 +44,34 @@ bool isDisplayStack(const QString &name) {
 
 // Only evaluated when a finding needs to name a process. Idle snapshots, which
 // are the overwhelming majority, never walk the process list here.
+// CPU a process used itself plus what its children used without ever being seen
+// alive (short-lived processes, credited when the parent waited for them).
+double cpuWithChildren(const QJsonObject &p) {
+    const double own = p[QLatin1String("cpuPercent")].toDouble(-1), children = p[QLatin1String("childCpuPercent")].toDouble(0);
+    return own < 0 && children <= 0 ? -1 : std::max(0.0, own) + children;
+}
+
 struct ProcessSurvey {
-    QString cpuName, memoryName, ioName, displayName;
-    double cpu = -1, memory = -1, io = -1, display = -1;
+    QString cpuName, memoryName, ioName, displayName, ownName;
+    // cpu includes short-lived children; own is the process alone (a pegged thread).
+    double cpu = -1, memory = -1, io = -1, display = -1, cpuChildren = 0, self = -1, own = -1;
     QStringList blocked;
     explicit ProcessSurvey(const QJsonObject &snapshot) {
         for (const auto *key : {"processes", "systemProcesses"}) {
             for (const auto &value : snapshot[key].toArray()) {
                 const auto p = value.toObject();
-                const QString name = p["name"].toString();
-                const double usage = p["cpuPercent"].toDouble(-1), rss = p["memoryBytes"].toDouble(-1);
-                const double disk = p["ioReadBytesPerSecond"].toDouble(0) + p["ioWriteBytesPerSecond"].toDouble(0);
-                if (usage > cpu) { cpu = usage; cpuName = name; }
+                // DevStats never names itself: opening its window or running a diagnosis
+                // briefly costs CPU, and that is not why the computer was slow.
+                if (p[QLatin1String("self")].toBool()) { self = p[QLatin1String("cpuPercent")].toDouble(-1); continue; }
+                const QString name = p[QLatin1String("name")].toString();
+                const double usage = cpuWithChildren(p), rss = p[QLatin1String("memoryBytes")].toDouble(-1);
+                const double disk = p[QLatin1String("ioReadBytesPerSecond")].toDouble(0) + p[QLatin1String("ioWriteBytesPerSecond")].toDouble(0);
+                if (usage > cpu) { cpu = usage; cpuName = name; cpuChildren = p[QLatin1String("childCpuPercent")].toDouble(0); }
+                if (p[QLatin1String("cpuPercent")].toDouble(-1) > own) { own = p[QLatin1String("cpuPercent")].toDouble(-1); ownName = name; }
                 if (rss > memory) { memory = rss; memoryName = name; }
                 if (disk > io) { io = disk; ioName = name; }
                 if (isDisplayStack(name) && usage > display) { display = usage; displayName = name; }
-                if (p["state"].toString() == "D" && blocked.size() < 4 && !blocked.contains(name)) blocked.append(name);
+                if (p[QLatin1String("state")].toString() == "D" && blocked.size() < 4 && !blocked.contains(name)) blocked.append(name);
             }
         }
     }
@@ -176,7 +188,8 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
         if (cpuSome) evidence << QStringLiteral("CPU 停顿 %1%").arg(*cpuSome, 0, 'f', 1);
         const auto &top = survey();
         const bool named = top.cpu >= 50;
-        add("cpu", severe, named ? QStringLiteral("CPU 繁忙，占用最高的是 %1（%2）").arg(top.cpuName, cores(top.cpu)) : QStringLiteral("CPU 繁忙，任务正在排队"),
+        const QString scope = top.cpuChildren >= top.cpu / 2 ? QStringLiteral("，含它启动的短暂子进程") : QString();
+        add("cpu", severe, named ? QStringLiteral("CPU 繁忙，占用最高的是 %1（%2%3）").arg(top.cpuName, cores(top.cpu), scope) : QStringLiteral("CPU 繁忙，任务正在排队"),
             evidence, QStringLiteral("确认不需要后可结束下方的进程；经常出现的话可以加入自动查杀。"), "suspect");
     }
 
@@ -184,9 +197,9 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     // is only worth a hint unless it also feeds one of the findings above.
     if (!cpuBusy && !cpuContention && snapshot["processesFresh"].toBool()) {
         const auto &top = survey();
-        if (top.cpu >= 95) {
+        if (top.own >= 95) {
             QJsonObject hint{{"kind", "singleCore"}, {"severity", "info"},
-                {"title", QStringLiteral("%1 占满了约 %2").arg(top.cpuName, cores(top.cpu))},
+                {"title", QStringLiteral("%1 占满了约 %2").arg(top.ownName, cores(top.own))},
                 {"evidence", QStringLiteral("整机 CPU %1").arg(usage ? percent(*usage) : QStringLiteral("—"))},
                 {"suggestion", QStringLiteral("该程序本身可能无响应，其他程序一般不受影响。")}, {"action", "suspect"}, {"immediate", false}};
             findings.append({int(Priority.indexOf("singleCore")), hint});
@@ -213,10 +226,29 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
 
     // CPU that no surviving process accounts for points at many short-lived processes.
     const Number attributed = metric(snapshot["attributedCpuPercent"]);
-    if (atLeast(forks, 100) && usage && coreCount && attributed && *usage * *coreCount * 100 - *attributed >= 100) {
-        add("forks", false, QStringLiteral("短命进程过多"),
-            {QStringLiteral("每秒新建 %1 个进程").arg(*forks, 0, 'f', 0), QStringLiteral("约 %1 的 CPU 没有归属到存活进程").arg(cores(*usage * *coreCount * 100 - *attributed))},
-            QStringLiteral("通常来自循环调用命令的脚本。检查定时任务或构建脚本。"));
+    // The parent that waited for them carries their CPU, which names the source.
+    QJsonObject source;
+    for (const auto &value : snapshot["processCreation"].toObject()["parents"].toArray())
+        if (!value.toObject()["self"].toBool()) { source = value.toObject(); break; }
+    const double sourceCpu = source["childCpuPercent"].toDouble(0);
+    const int sourceChildren = source["newChildren"].toInt(0);
+    const double unattributed = usage && coreCount && attributed ? *usage * *coreCount * 100 - *attributed : 0;
+    if ((atLeast(forks, 100) && unattributed >= 100) || (atLeast(forks, 50) && sourceCpu >= 50)) {
+        QStringList evidence{QStringLiteral("每秒新建 %1 个进程").arg(*forks, 0, 'f', 0)};
+        if (unattributed >= 50) evidence << QStringLiteral("约 %1的 CPU 没有归属到存活进程").arg(cores(unattributed));
+        QString advice = QStringLiteral("通常来自循环调用命令的脚本。检查定时任务或构建脚本。");
+        if (sourceCpu >= 10 || sourceChildren >= 5) {
+            const QString who = QStringLiteral("%1（PID %2%3）").arg(source["name"].toString(), QString::number(source["pid"].toDouble(), 'f', 0),
+                source["own"].toBool() ? QString() : QStringLiteral("，") + source["owner"].toString());
+            QStringList facts;
+            if (sourceCpu >= 10) facts << QStringLiteral("它启动的短暂子进程用了约 %1").arg(cores(sourceCpu));
+            if (sourceChildren >= 5) facts << QStringLiteral("两次扫描间新出现 %1 个子进程").arg(sourceChildren);
+            evidence << QStringLiteral("主要来自 %1：%2").arg(who, facts.join(QStringLiteral("，")));
+            advice = source["own"].toBool()
+                ? QStringLiteral("%1 在反复启动命令。确认它在做什么；不需要的话可以结束它，或加入自动查杀。").arg(source["name"].toString())
+                : QStringLiteral("%1 属于 %2，在反复启动命令；只能由管理员处理，常见于安全软件或系统服务的定时检查。").arg(source["name"].toString(), source["owner"].toString());
+        }
+        add("forks", false, QStringLiteral("短命进程过多"), evidence, advice, "suspect");
     }
 
     if (snapshot["processesFresh"].toBool()) {
@@ -272,6 +304,10 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     if (!diskBusy) coverage.append(QStringLiteral("磁盘繁忙度和等待时间尚无数据。"));
     if (!diskKnown) coverage.append(QStringLiteral("未读取到文件系统容量。"));
     coverage.append(QStringLiteral("其他用户和系统进程只能看到 CPU 与内存，不能结束；当前用户的进程才能操作。"));
+    if (snapshot["processesFresh"].toBool()) {
+        const auto &top = survey();
+        if (top.self >= 30) coverage.append(QStringLiteral("DevStats 自身此刻占用 %1（打开窗口或一键诊断时会短暂升高），已排除在可疑程序之外。").arg(cores(top.self)));
+    }
     coverage.append(QStringLiteral("GPU 负载、应用内部的锁等待和网络延迟无法直接测量。"));
 
     const bool known = usage && availableFraction;
@@ -349,41 +385,45 @@ QJsonArray rankSuspects(const QJsonObject &snapshot, const QString &basis, int l
     struct Group {
         QString key, name, owner;
         bool own = false, kernel = false, cpuKnown = false, ioKnown = false;
-        int count = 0, blocked = 0;
-        double cpu = 0, memory = 0, io = 0, growth = 0;
+        int count = 0, blocked = 0, born = 0;
+        double cpu = 0, memory = 0, io = 0, growth = 0, children = 0;
         QVector<QJsonObject> members;
     };
     auto basisValue = [&basis](double cpu, double memory, double io) { return basis == "memory" ? memory : basis == "io" ? io : cpu; };
     QHash<QString, QString> applicationNames;
     for (const auto &value : snapshot["activityApplications"].toArray()) {
         const auto app = value.toObject();
-        applicationNames.insert(app["identity"].toString(), app["name"].toString());
+        applicationNames.insert(app[QLatin1String("identity")].toString(), app[QLatin1String("name")].toString());
     }
     QHash<QString, Group> groups;
     auto include = [&](const QJsonObject &p, const QString &key, const QString &name, const QString &owner, bool own) {
         auto &group = groups[key];
-        if (group.key.isEmpty()) { group.key = key; group.name = name; group.owner = owner; group.own = own; group.kernel = p["kernelThread"].toBool(); }
+        if (group.key.isEmpty()) { group.key = key; group.name = name; group.owner = owner; group.own = own; group.kernel = p[QLatin1String("kernelThread")].toBool(); }
         ++group.count;
-        if (p["cpuPercent"].isDouble()) { group.cpu += p["cpuPercent"].toDouble(); group.cpuKnown = true; }
-        group.memory += p["memoryBytes"].toDouble(0);
-        if (p["ioReadBytesPerSecond"].isDouble() || p["ioWriteBytesPerSecond"].isDouble()) {
-            group.io += p["ioReadBytesPerSecond"].toDouble(0) + p["ioWriteBytesPerSecond"].toDouble(0); group.ioKnown = true;
+        if (p[QLatin1String("cpuPercent")].isDouble()) { group.cpu += p[QLatin1String("cpuPercent")].toDouble(); group.cpuKnown = true; }
+        // Short-lived children are credited to the parent that started them.
+        if (p[QLatin1String("childCpuPercent")].toDouble(0) > 0) { group.cpu += p[QLatin1String("childCpuPercent")].toDouble(); group.children += p[QLatin1String("childCpuPercent")].toDouble(); group.cpuKnown = true; }
+        group.born += p[QLatin1String("newChildren")].toInt(0);
+        group.memory += p[QLatin1String("memoryBytes")].toDouble(0);
+        if (p[QLatin1String("ioReadBytesPerSecond")].isDouble() || p[QLatin1String("ioWriteBytesPerSecond")].isDouble()) {
+            group.io += p[QLatin1String("ioReadBytesPerSecond")].toDouble(0) + p[QLatin1String("ioWriteBytesPerSecond")].toDouble(0); group.ioKnown = true;
         }
-        group.growth += p["memoryGrowthBytesPerSecond"].toDouble(0);
-        if (p["state"].toString() == "D") ++group.blocked;
+        group.growth += p[QLatin1String("memoryGrowthBytesPerSecond")].toDouble(0);
+        if (p[QLatin1String("state")].toString() == "D") ++group.blocked;
         group.members.append(p);
     };
     for (const auto &value : snapshot["processes"].toArray()) {
         const auto p = value.toObject();
-        const QString identity = p["applicationIdentity"].toString();
-        const QString key = identity.isEmpty() ? QStringLiteral("pid:%1:%2").arg(p["pid"].toDouble(), 0, 'f', 0).arg(p["startTicks"].toDouble(), 0, 'f', 0) : QStringLiteral("app:") + identity;
-        include(p, key, applicationNames.value(identity, p["name"].toString()), QString(), true);
+        if (p[QLatin1String("self")].toBool()) continue;
+        const QString identity = p[QLatin1String("applicationIdentity")].toString();
+        const QString key = identity.isEmpty() ? QStringLiteral("pid:%1:%2").arg(p[QLatin1String("pid")].toDouble(), 0, 'f', 0).arg(p[QLatin1String("startTicks")].toDouble(), 0, 'f', 0) : QStringLiteral("app:") + identity;
+        include(p, key, applicationNames.value(identity, p[QLatin1String("name")].toString()), QString(), true);
     }
     for (const auto &value : snapshot["systemProcesses"].toArray()) {
         const auto p = value.toObject();
         // Kernel workers differ only in their queue suffix: kworker/u8:2 and kworker/3:1.
-        const QString name = p["name"].toString().section('/', 0, 0);
-        include(p, QStringLiteral("sys:") + name + ':' + p["owner"].toString(), name, p["owner"].toString(), false);
+        const QString name = p[QLatin1String("name")].toString().section('/', 0, 0);
+        include(p, QStringLiteral("sys:") + name + ':' + p[QLatin1String("owner")].toString(), name, p[QLatin1String("owner")].toString(), false);
     }
     QVector<Group> ordered;
     ordered.reserve(groups.size());
@@ -402,15 +442,26 @@ QJsonArray rankSuspects(const QJsonObject &snapshot, const QString &basis, int l
     QJsonArray result;
     for (auto &group : ordered) {
         if (result.size() >= limit) break;
-        std::sort(group.members.begin(), group.members.end(), [&](const QJsonObject &a, const QJsonObject &b) {
-            auto value = [&](const QJsonObject &p) { return basisValue(p["cpuPercent"].toDouble(-1), p["memoryBytes"].toDouble(-1), p["ioReadBytesPerSecond"].toDouble(0) + p["ioWriteBytesPerSecond"].toDouble(0)); };
-            return value(a) > value(b);
+        // Each member's value is read once and only the eight shown are ordered: a
+        // group of a hundred processes would otherwise repeat thousands of lookups.
+        QVector<QPair<double, int>> keyed;
+        keyed.reserve(group.members.size());
+        for (int i = 0; i < group.members.size(); ++i) {
+            const auto &p = group.members[i];
+            keyed.append({basisValue(cpuWithChildren(p), p[QLatin1String("memoryBytes")].toDouble(-1),
+                                     p[QLatin1String("ioReadBytesPerSecond")].toDouble(0) + p[QLatin1String("ioWriteBytesPerSecond")].toDouble(0)), i});
+        }
+        const int shown = std::min(8, int(keyed.size()));
+        std::partial_sort(keyed.begin(), keyed.begin() + shown, keyed.end(), [](const QPair<double, int> &a, const QPair<double, int> &b) {
+            return a.first != b.first ? a.first > b.first : a.second < b.second;
         });
         QJsonArray members;
-        for (int i = 0; i < std::min(8, group.members.size()); ++i) members.append(group.members[i]);
+        for (int i = 0; i < shown; ++i) members.append(group.members[keyed[i].second]);
         QStringList reason;
         if (group.blocked) reason << QStringLiteral("%1 个进程在等待磁盘").arg(group.blocked);
         if (group.cpu >= 25) reason << QStringLiteral("约占全机 CPU 的 %1").arg(percent(std::min(1.0, group.cpu / (coreCount * 100))));
+        if (group.children >= 25) reason << QStringLiteral("其中短暂子进程约 %1").arg(cores(group.children));
+        if (group.born >= 5) reason << QStringLiteral("新启动 %1 个子进程").arg(group.born);
         if (totalMemory > 0 && group.memory >= totalMemory * .1) reason << QStringLiteral("占内存 %1").arg(percent(group.memory / totalMemory));
         if (group.growth >= 5 * MiB) reason << QStringLiteral("内存增长 %1/s").arg(size(group.growth));
         if (group.io >= 5 * MiB) reason << QStringLiteral("读写 %1/s").arg(size(group.io));

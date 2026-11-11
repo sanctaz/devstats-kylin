@@ -376,7 +376,9 @@ struct MonitorWindow::Impl {
             auto *item = existing.take(identity);
             if (!item) item = new QTreeWidgetItem;
             const QString owner = process.value("owner").toString();
-            const QStringList cells = QStringList{process.value("name").toString(), owner.isEmpty() ? QStringLiteral("我") : owner, number(process.value("pid"))}
+            // DevStats' own row says so: it is excluded from findings, not hidden.
+            const QString name = process.value("name").toString() + (process.value("self").toBool() ? QStringLiteral("（本工具）") : QString());
+            const QStringList cells = QStringList{name, owner.isEmpty() ? QStringLiteral("我") : owner, number(process.value("pid"))}
                 + measures(process);
             for (int column = 0; column < cells.size(); ++column) {
                 if (item->text(column) != cells[column]) item->setText(column, cells[column]);
