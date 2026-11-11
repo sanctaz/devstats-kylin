@@ -1,6 +1,7 @@
 #include "../src/charts.h"
 #include "../src/diagnostics.h"
 #include "../src/diagnostics_panel.h"
+#include "../src/history_feed.h"
 #include "../src/ui_components.h"
 #include "../src/ui_theme.h"
 
@@ -302,7 +303,7 @@ int main(int argc, char **argv) {
     tabs->setCurrentIndex(2); settle();
     const qint64 end = QDateTime::currentSecsSinceEpoch();
     QJsonArray points{QJsonObject{{"timestamp", double(end - 5)}, {"value", 420}}};
-    panel.setHistories(QJsonObject{{"schedulerLatency", points}}, end - 60, end); settle();
+    panel.setHistories(HistoryFeed(QJsonObject{{"schedulerLatency", points}}, end - 60, end)); settle();
     auto *latency = panel.findChild<HistoryChart *>("schedulerLatencyHistory");
     check(latency && latency->accessibleDescription().contains(QStringLiteral("420 毫秒")), "latency chart uses milliseconds");
     check(panel.findChild<HistoryChart *>("diskBusyHistory") && panel.findChild<HistoryChart *>("memoryPressureHistory"), "pressure charts exist");

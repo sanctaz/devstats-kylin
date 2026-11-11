@@ -80,6 +80,7 @@ void cpu() {
     // DevStats never names itself; its own cost is noted once instead.
     auto self = process("devstats", 70); self["self"] = true;
     s["processes"] = QJsonArray{self, process("worker", 60)};
+    s["selfCpuPercent"] = 70;
     d = diagnoseSystem(s);
     check(finding(d, "cpu")["title"].toString().contains("worker") && !finding(d, "cpu")["title"].toString().contains("devstats"),
           "DevStats is not named as the busiest program");

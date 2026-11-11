@@ -277,8 +277,8 @@ QJsonObject processJson(const Process &process, long pageSize) {
 }
 // Only present when non-zero, so idle rows stay as small as before.
 void addChildren(QJsonObject &json, const Process &process) {
-    if (process.childCpu > 0) json["childCpuPercent"] = process.childCpu;
-    if (process.newChildren > 0) json["newChildren"] = process.newChildren;
+    if (process.childCpu > 0) json.insert(QStringLiteral("childCpuPercent"), process.childCpu);
+    if (process.newChildren > 0) json.insert(QStringLiteral("newChildren"), process.newChildren);
 }
 }
 
@@ -301,6 +301,8 @@ struct LinuxSampler::Impl {
     const qint64 selfPid = ::getpid();
     const uid_t ownUid = ::getuid();
     QJsonObject cachedProcessCreation;
+    // DevStats' own CPU, so a diagnosis can state it without walking every process.
+    QJsonValue cachedSelfCpu = unavailable();
     // Whole-machine busy ticks at the previous process scan: no parent's children can
     // have used more CPU than the machine had busy during the same interval.
     quint64 previousBusyTicks = 0;
@@ -1000,12 +1002,12 @@ struct LinuxSampler::Impl {
             if (a.rss != b.rss) return a.rss > b.rss;
             return a.pid < b.pid;
         });
-        cachedProcesses = {}; cachedGroups = {};
+        cachedProcesses = {}; cachedGroups = {}; cachedSelfCpu = unavailable();
         QMap<QString, QJsonArray> grouped;
         for (const auto &process : ordered) {
             auto json = processJson(process, pageSize);
             addChildren(json, process);
-            if (process.pid == selfPid) json["self"] = true;
+            if (process.pid == selfPid) { json.insert(QStringLiteral("self"), true); cachedSelfCpu = process.cpu; }
             cachedProcesses.append(json);
             if (!process.project.isEmpty()) grouped[process.project].append(json);
         }
@@ -1031,8 +1033,8 @@ struct LinuxSampler::Impl {
             kept.insert(other.process.pid);
             auto json = processJson(other.process, pageSize);
             addChildren(json, other.process);
-            json["owner"] = ownerName(other.uid);
-            json["kernelThread"] = bool(other.process.flags & KernelThreadFlag);
+            json.insert(QStringLiteral("owner"), ownerName(other.uid));
+            json.insert(QStringLiteral("kernelThread"), bool(other.process.flags & KernelThreadFlag));
             cachedSystemProcesses.append(json);
         };
         std::sort(others.begin(), others.end(), [](const Other &a, const Other &b) {
@@ -1085,7 +1087,7 @@ QJsonObject LinuxSampler::sample(bool scanProcesses) {
         {"processMonotonicSeconds", double(d->previousProcessTime) / 1e9},
         {"network", d->network(now)}, {"battery", d->battery()}, {"processes", d->cachedProcesses},
         {"groups", d->cachedGroups}, {"processCount", d->cachedProcessCount}, {"scanMilliseconds", scanTime},
-        {"processCreation", d->cachedProcessCreation}, {"selfPid", double(d->selfPid)},
+        {"processCreation", d->cachedProcessCreation}, {"selfPid", double(d->selfPid)}, {"selfCpuPercent", d->cachedSelfCpu},
         {"systemProcesses", d->cachedSystemProcesses}, {"processStates", d->cachedProcessStates},
         {"attributedCpuPercent", d->cachedAttributedCpu}, {"thermal", d->cachedThermal}};
 }

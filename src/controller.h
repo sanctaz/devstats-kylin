@@ -13,6 +13,7 @@
 #include <memory>
 #include <deque>
 #include "activity_tracker.h"
+#include "history_feed.h"
 #include "diagnostic_run.h"
 
 class LinuxSampler;
@@ -40,6 +41,7 @@ public slots:
     void stop();
     void setPresentationVisible(bool visible);
     void setNetworkObservation(bool enabled);
+    void setSuspectRanking(bool enabled);
     void setProjects(const QStringList &projects);
     void setHistoryDuration(qint64 seconds);
     void refreshDiagnostics();
@@ -58,7 +60,11 @@ public slots:
     void pauseProcessRules();
 signals:
     void snapshotReady(const QJsonObject &snapshot);
+    // The whole range, sent when the window opens, when the range changes and
+    // about once a minute.
     void historyReady(const QJsonObject &history, qint64 start, qint64 end);
+    // Every other sample: only the points it added, one per metric.
+    void historyAppended(const QJsonObject &points, qint64 start, qint64 end);
     void actionFinished(QString message);
     void incidentsReady(QJsonArray incidents, QString error);
     void incidentDetailReady(QJsonObject incident);
@@ -72,7 +78,7 @@ private:
     void finishDiagnostics(const QString &state);
     friend class MonitorWorkerTest;
     void updateNetworkPresentation();
-    void publishHistory();
+    void publishHistory(const QJsonObject &sampled = QJsonObject());
     void publishIncidents();
     void publishRelief(QJsonObject result);
     void observeRelief();
@@ -84,6 +90,7 @@ private:
     std::unique_ptr<ProcessNetworkSampler> processNetwork_;
     QJsonObject cachedNetwork_, lastMeasuredNetwork_;
     bool networkObservation_ = false;
+    bool suspectRanking_ = false;
     std::unique_ptr<HistoryStore> history_;
     std::unique_ptr<IncidentRecorder> incidents_;
     std::unique_ptr<MemoryOptimizer> memoryOptimizer_;
@@ -154,10 +161,10 @@ private:
     qint64 lastNotificationAt_ = 0;
     QJsonArray automationRules_;
     bool reliefBusy_ = false;
-    QJsonObject latest_, history_;
+    QJsonObject latest_;
+    HistoryFeed history_;
     QJsonArray incidents_;
     QJsonObject reliefOutcome_;
-    qint64 historyStart_ = 0, historyEnd_ = 0;
     QString selected_ = "overview";
     QStringList projects_, customApps_;
     QVector<QSystemTrayIcon *> trays_;

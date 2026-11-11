@@ -223,9 +223,10 @@ void RecentActivityTracker::apply(QJsonObject &snapshot) {
             const double included = interval.end - std::max(interval.start, now - 60);
             if (included > 0) { processDuration += included; processSeconds += interval.cpuSeconds * included / (interval.end - interval.start); }
         }
-        process[QLatin1String("cpuAveragePercent")] = processDuration > 0 ? QJsonValue(processSeconds / processDuration * 100) : unknown();
-        process[QLatin1String("cpuObservationSeconds")] = processDuration;
-        process[QLatin1String("applicationIdentity")] = application;
+        // insert() writes the field once; operator[] would first add a null and then replace it.
+        process.insert(QStringLiteral("cpuAveragePercent"), processDuration > 0 ? QJsonValue(processSeconds / processDuration * 100) : unknown());
+        process.insert(QStringLiteral("cpuObservationSeconds"), processDuration);
+        process.insert(QStringLiteral("applicationIdentity"), application);
         scan.processes.append(process); result.append(process);
         auto &app = applications_[application];
         app.metadata = metadata.value(application); app.lastSeen = now;
@@ -257,20 +258,20 @@ void RecentActivityTracker::apply(QJsonObject &snapshot) {
             hasMeasurement |= interval.measured;
         }
         auto object = app.metadata;
-        object["processes"] = scan.processes; object["processCount"] = scan.processes.size();
-        object["cpuAveragePercent"] = duration > 0 && hasMeasurement ? QJsonValue(cpuSeconds / duration * 100) : unknown();
-        object["cpuObservationSeconds"] = duration;
-        object["cpuCoverageFraction"] = duration > 0 ? std::max(0.0, 1 - incomplete / duration) : 0;
-        object["cpuComplete"] = duration > 0 && incomplete == 0;
-        object["noReadableProcesses"] = scan.processes.isEmpty();
-        for (const QString field : {QStringLiteral("ioReadBytesPerSecond"), QStringLiteral("ioWriteBytesPerSecond")}) {
+        object.insert(QStringLiteral("processes"), scan.processes); object.insert(QStringLiteral("processCount"), scan.processes.size());
+        object.insert(QStringLiteral("cpuAveragePercent"), duration > 0 && hasMeasurement ? QJsonValue(cpuSeconds / duration * 100) : unknown());
+        object.insert(QStringLiteral("cpuObservationSeconds"), duration);
+        object.insert(QStringLiteral("cpuCoverageFraction"), duration > 0 ? std::max(0.0, 1 - incomplete / duration) : 0);
+        object.insert(QStringLiteral("cpuComplete"), duration > 0 && incomplete == 0);
+        object.insert(QStringLiteral("noReadableProcesses"), scan.processes.isEmpty());
+        for (const QString &field : {QStringLiteral("ioReadBytesPerSecond"), QStringLiteral("ioWriteBytesPerSecond")}) {
             double total = 0; bool complete = !scan.processes.isEmpty(), any = false;
             for (const auto &process : scan.processes) {
                 const auto rate = process.toObject().value(field);
                 complete &= measured(rate);
                 if (measured(rate)) { total += rate.toDouble(); any = true; }
             }
-            object[field] = any ? QJsonValue(total) : unknown(); object[field + "Complete"] = complete;
+            object.insert(field, any ? QJsonValue(total) : unknown()); object.insert(field + QStringLiteral("Complete"), complete);
         }
         apps.append(object); ++it;
     }

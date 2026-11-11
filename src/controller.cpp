@@ -50,6 +50,11 @@ QJsonValue pressureFraction(const QJsonObject &snapshot, const QString &resource
     const auto v = snapshot.value("pressure").toObject().value(resource).toObject().value("some").toObject().value("avg10");
     return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble() >= 0 && v.toDouble() <= 100 ? QJsonValue(v.toDouble() / 100) : QJsonValue(QJsonValue::Null);
 }
+// One two-second sample, in the shape the stored history uses for its buckets.
+QJsonObject livePoint(const QPair<qint64, double> &point) {
+    return {{"timestamp", double(point.first)}, {"value", point.second},
+        {"minimum", point.second}, {"maximum", point.second}, {"count", 1}, {"resolutionSeconds", 2}};
+}
 const QStringList metricKeys = {"cpu", "memory", "network", "battery", "disk"};
 const QStringList metricTitles = {QString::fromUtf8("CPU"), QString::fromUtf8("内存"),
     QString::fromUtf8("网络"), QString::fromUtf8("电池"), QString::fromUtf8("磁盘")};
@@ -127,7 +132,20 @@ void MonitorWorker::stop() {
 void MonitorWorker::setPresentationVisible(bool visible) {
     if (visible_ == visible) return;
     visible_ = visible;
+    // Nothing is published while hidden, so a window that reappears needs the whole range.
+    if (visible) lastArchiveQuery_ = -1;
     if (visible && !stopped_ && !sleeping_) { lastProcessSample_ = -1; sample(); requestIncidents(); }
+}
+
+// Ranking every process into suspects is only displayed on the diagnosis page.
+void MonitorWorker::setSuspectRanking(bool enabled) {
+    if (suspectRanking_ == enabled) return;
+    suspectRanking_ = enabled;
+    if (!enabled || stopped_ || sleeping_ || latest_.isEmpty()) return;
+    // The page was just opened: rank the scan already in hand instead of waiting for the next.
+    cachedSuspects_ = rankSuspects(latest_, suspectBasis(latest_["diagnostics"].toObject()));
+    latest_.insert(QStringLiteral("suspects"), cachedSuspects_);
+    emit snapshotReady(latest_);
 }
 
 void MonitorWorker::setNetworkObservation(bool enabled) {
@@ -381,15 +399,18 @@ void MonitorWorker::sample() {
         for (const auto &key : {"processes", "activityApplications", "activityObservationSeconds", "activityBasis"})
             cachedActivity_[key] = latest_.value(key);
     }
-    if (probe_) latest_["responsiveness"] = probe_->takeWindow();
-    latest_["processSampleAgeSeconds"] = double(now - lastProcessSample_) / 1000;
-    if (processRules_) latest_["processAutomation"] = scan ? processRules_->observe(latest_, now) : processRules_->state();
+    if (probe_) latest_.insert(QStringLiteral("responsiveness"), probe_->takeWindow());
+    latest_.insert(QStringLiteral("processSampleAgeSeconds"), double(now - lastProcessSample_) / 1000);
+    if (processRules_) latest_.insert(QStringLiteral("processAutomation"), scan ? processRules_->observe(latest_, now) : processRules_->state());
     if (networkObservation_ && scan && processNetwork_) { cachedNetwork_ = processNetwork_->sample(latest_); cachedNetwork_["observing"] = true; }
     updateNetworkPresentation();
-    latest_["diagnostics"] = diagnoseSystem(latest_);
+    latest_.insert(QStringLiteral("diagnostics"), diagnoseSystem(latest_));
     // Ranking walks every process, so it runs only when someone will read the result.
-    if (scan && (visible_ || diagnosticRun_.running())) cachedSuspects_ = rankSuspects(latest_, suspectBasis(latest_["diagnostics"].toObject()));
-    latest_["suspects"] = cachedSuspects_;
+    if (scan) {
+        const bool wanted = suspectRanking_ || diagnosticRun_.running();
+        cachedSuspects_ = wanted ? rankSuspects(latest_, suspectBasis(latest_["diagnostics"].toObject())) : QJsonArray();
+    }
+    latest_.insert(QStringLiteral("suspects"), cachedSuspects_);
     // A diagnostic run is observation only, including its final sample. Do not
     // feed its additional scans into the existing automatic heap-reclaim policy.
     const bool observing = diagnosticRun_.running();
@@ -399,20 +420,20 @@ void MonitorWorker::sample() {
         timer_->setTimerType(diagnosticTimerType_); timer_->start();
     }
     if (observing) lastDiagnosticRun_ = diagnosticRun_.result();
-    latest_["diagnosticRun"] = lastDiagnosticRun_;
+    latest_.insert(QStringLiteral("diagnosticRun"), lastDiagnosticRun_);
     const auto optimization = observing ? QJsonObject() : memoryOptimizer_->observe(latest_);
     if (!optimization.isEmpty()) {
         lastMemoryOptimization_ = optimization;
         emit actionFinished(optimization.value("message").toString());
     }
-    latest_["memoryOptimization"] = lastMemoryOptimization_;
+    latest_.insert(QStringLiteral("memoryOptimization"), lastMemoryOptimization_);
     observeRelief();
-    latest_["memoryReliefOutcome"] = lastReliefOutcome_;
-    latest_["memoryReliefBusy"] = reliefBusy_;
-    latest_["incidentRecording"] = incidentRecording_;
+    latest_.insert(QStringLiteral("memoryReliefOutcome"), lastReliefOutcome_);
+    latest_.insert(QStringLiteral("memoryReliefBusy"), reliefBusy_);
+    latest_.insert(QStringLiteral("incidentRecording"), incidentRecording_);
     if (incidents_->observe(latest_)) incidentsDirty_ = true;
-    if (!incidents_->error().isEmpty()) latest_["incidentError"] = incidents_->error();
-    if (!history_->record(latest_)) latest_["historyError"] = history_->error();
+    if (!incidents_->error().isEmpty()) latest_.insert(QStringLiteral("incidentError"), incidents_->error());
+    if (!history_->record(latest_)) latest_.insert(QStringLiteral("historyError"), history_->error());
     const qint64 at = qint64(latest_.value("timestamp").toDouble());
     const auto cpu = latest_.value("cpu").toObject(), memory = latest_.value("memory").toObject();
     const auto disk = latest_.value("diskIO").toObject(), network = latest_.value("network").toObject();
@@ -425,10 +446,13 @@ void MonitorWorker::sample() {
         {"swapOut", latest_.value("vm").toObject().value("swapOutBytesPerSecond")},
         {"memoryPressure", pressureFraction(latest_, "memory")}, {"ioPressure", pressureFraction(latest_, "io")},
         {"schedulerLatency", latest_.value("responsiveness").toObject().value("schedulerMaxMs")}, {"diskBusy", disk.value("busiestUtilization")}};
+    QJsonObject sampled;
     for (auto it = metrics.cbegin(); it != metrics.cend(); ++it) {
         auto &points = raw_[it.key()];
-        if (it.value().isDouble() && std::isfinite(it.value().toDouble()))
+        if (it.value().isDouble() && std::isfinite(it.value().toDouble())) {
             points.push_back(qMakePair(at, it.value().toDouble()));
+            if (visible_) sampled.insert(it.key(), livePoint(points.back()));
+        }
         while (!points.empty() && (points.front().first < at - 3600 || points.size() > 1801))
             points.pop_front();
     }
@@ -437,30 +461,35 @@ void MonitorWorker::sample() {
     const int first = qMax(0, int(cpuPoints.size()) - 20);
     for (int i = first; i < int(cpuPoints.size()); ++i)
         menu.append(QJsonObject{{"timestamp", double(cpuPoints[size_t(i)].first)}, {"value", cpuPoints[size_t(i)].second}});
-    latest_["menuCPUHistory"] = menu;
+    latest_.insert(QStringLiteral("menuCPUHistory"), menu);
     emit snapshotReady(latest_);
-    if (visible_) { publishHistory(); publishIncidents(); }
+    if (visible_) { publishHistory(sampled); publishIncidents(); }
 }
 
 void MonitorWorker::updateNetworkPresentation() {
     lastMeasuredNetwork_ = ProcessNetworkSampler::retainedObservation(cachedNetwork_, lastMeasuredNetwork_);
     if (latest_.isEmpty()) return;
-    latest_["networkApplications"] = cachedNetwork_;
+    latest_.insert(QStringLiteral("networkApplications"), cachedNetwork_);
     if (cachedNetwork_.value("state").toString() == "ready" || cachedNetwork_.value("state").toString() == "partial") latest_.remove("networkApplicationsPrevious");
-    else latest_["networkApplicationsPrevious"] = lastMeasuredNetwork_;
+    else latest_.insert(QStringLiteral("networkApplicationsPrevious"), lastMeasuredNetwork_);
 }
 
-void MonitorWorker::publishHistory() {
+void MonitorWorker::publishHistory(const QJsonObject &sampled) {
     if (!history_ || latest_.isEmpty()) return;
     const qint64 end = qint64(latest_.value("timestamp").toDouble());
     const qint64 start = end - duration_;
+    // Rebuilding the whole range costs time in proportion to its length, here and
+    // again in every chart that reads it. Between the minute refreshes of the stored
+    // part, the window only needs the points this sample added.
+    if (lastArchiveQuery_ >= 0 && clock_.elapsed() - lastArchiveQuery_ < 60000) {
+        emit historyAppended(sampled, start, end);
+        return;
+    }
     qint64 firstRaw = end;
     for (auto it = raw_.cbegin(); it != raw_.cend(); ++it)
         if (!it.value().empty()) firstRaw = qMin(firstRaw, it.value().front().first);
-    if (lastArchiveQuery_ < 0 || clock_.elapsed() - lastArchiveQuery_ >= 60000) {
-        archived_ = history_->query(start, qMin(end, firstRaw - 1), 600);
-        lastArchiveQuery_ = clock_.elapsed();
-    }
+    archived_ = history_->query(start, qMin(end, firstRaw - 1), 600);
+    lastArchiveQuery_ = clock_.elapsed();
     QJsonObject result;
     for (auto it = raw_.cbegin(); it != raw_.cend(); ++it) {
         QJsonArray points;
@@ -470,10 +499,7 @@ void MonitorWorker::publishHistory() {
             if (point.value("lastSample").toDouble(point.value("timestamp").toDouble()) < liveStart)
                 points.append(point);
         }
-        for (const auto &point : it.value()) if (point.first >= start && point.first <= end) {
-            points.append(QJsonObject{{"timestamp", double(point.first)}, {"value", point.second},
-                {"minimum", point.second}, {"maximum", point.second}, {"count", 1}, {"resolutionSeconds", 2}});
-        }
+        for (const auto &point : it.value()) if (point.first >= start && point.first <= end) points.append(livePoint(point));
         result.insert(it.key(), points);
     }
     emit historyReady(result, start, end);
@@ -521,8 +547,12 @@ AppController::AppController(QObject *parent)
         emit snapshotUpdated();
     });
     connect(worker_, &MonitorWorker::historyReady, this, [this](const QJsonObject &history, qint64 start, qint64 end) {
-        history_ = history; historyStart_ = start; historyEnd_ = end;
-        if (window_ && window_->isVisible() && !window_->isMinimized()) window_->setHistories(history, start, end);
+        history_.reset(history, start, end);
+        if (window_ && window_->isVisible() && !window_->isMinimized()) window_->setHistories(history_);
+    });
+    connect(worker_, &MonitorWorker::historyAppended, this, [this](const QJsonObject &points, qint64 start, qint64 end) {
+        history_.append(points, start, end);
+        if (window_ && window_->isVisible() && !window_->isMinimized()) window_->setHistories(history_);
     });
     connect(worker_, &MonitorWorker::incidentsReady, this, [this](const QJsonArray &incidents, const QString &error) {
         if (!error.isEmpty()) {
@@ -729,6 +759,7 @@ void AppController::ensureWindow() {
     connect(window_, &MonitorWindow::selectionChanged, this, [this](const QString &module) { selected_ = module; });
     connect(window_, &MonitorWindow::visibilityChanged, worker_, &MonitorWorker::setPresentationVisible);
     connect(window_, &MonitorWindow::networkObservationRequested, worker_, &MonitorWorker::setNetworkObservation);
+    connect(window_, &MonitorWindow::suspectRankingRequested, worker_, &MonitorWorker::setSuspectRanking);
     connect(window_, &MonitorWindow::visibilityChanged, this, [this](bool visible) {
         if (!visible && window_) { settings_.setValue("windowGeometry", window_->saveGeometry()); windowReleaseTimer_->start(); }
         else windowReleaseTimer_->stop();
@@ -799,7 +830,7 @@ void AppController::ensureWindow() {
     connect(window_, &MonitorWindow::quickLaunchRequested, this, &AppController::launchApplication);
     if (!latest_.isEmpty()) window_->setSnapshot(latest_);
     window_->setIncidents(incidents_);
-    if (!history_.isEmpty()) window_->setHistories(history_, historyStart_, historyEnd_);
+    if (!history_.isEmpty()) window_->setHistories(history_);
     QMetaObject::invokeMethod(worker_, "setHistoryDuration", Qt::QueuedConnection, Q_ARG(qint64, window_->historyDuration()));
     QMetaObject::invokeMethod(worker_, "requestIncidents", Qt::QueuedConnection);
 }
@@ -847,7 +878,7 @@ void AppController::showModule(const QString &module) {
         }
         window_->setSnapshot(presentation);
     }
-    if (!history_.isEmpty()) window_->setHistories(history_, historyStart_, historyEnd_);
+    if (!history_.isEmpty()) window_->setHistories(history_);
     if (window_->isMinimized()) window_->showNormal();
     else window_->show();
     window_->raise();

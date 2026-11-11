@@ -5,6 +5,7 @@
 #include "../src/diagnostic_run.h"
 #include "../src/diagnostics.h"
 #include "../src/diagnostics_panel.h"
+#include "../src/history_feed.h"
 #include "../src/memory_relief_dialog.h"
 #include "../src/monitor_window.h"
 #include "../src/process_rules_panel.h"
@@ -234,7 +235,7 @@ int main(int argc, char **argv) {
         window.setPreferences(false, 0, {"/home/user/work/devstats"}, {}, true, true);
         window.rulesPanel()->setConfiguration(true, automation["rules"].toArray());
         window.setIncidents(incidents());
-        window.setHistories(histories(end - 600, end, variant.stressed), end - 600, end);
+        window.setHistories(HistoryFeed(histories(end - 600, end, variant.stressed), end - 600, end));
         window.setSnapshot(data);
         window.resize(variant.size);
         window.show();

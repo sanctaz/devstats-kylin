@@ -54,7 +54,7 @@ int main(int argc,char **argv){
         window.setSelectedModule("memory");check(memory->topLevelItem(0)->text(0)=="Replacement","memory page uses latest name and identity");
         auto later=snapshot("Newest",12);window.setSnapshot(later);check(cpu->topLevelItem(0)->text(0)=="Replacement","CPU stays untouched while memory visible");
         window.setSelectedModule("cpu");check(cpu->topLevelItem(0)->text(0)=="Newest","returning page catches latest hidden changes");
-        window.setSelectedModule("overview");QJsonObject histories{{"cpu",QJsonArray{QJsonObject{{"timestamp",1770000000.},{"value",.4}}}}};window.setHistories(histories,1769999900,1770000000);
+        window.setSelectedModule("overview");QJsonObject histories{{"cpu",QJsonArray{QJsonObject{{"timestamp",1770000000.},{"value",.4}}}}};window.setHistories(HistoryFeed(histories,1769999900,1770000000));
         auto charts=window.findChildren<HistoryChart*>("cpuHistory");check(charts.size()==1,"CPU page chart exists");
         window.setSelectedModule("cpu");check(charts.first()->accessibleDescription().contains("40%"),"hidden chart catches cached history on switch");
         for (const auto &module : {"overview", "cpu", "memory", "disk", "network", "battery", "diagnostics", "automation", "projects"}) {

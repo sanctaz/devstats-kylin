@@ -54,7 +54,7 @@ double cpuWithChildren(const QJsonObject &p) {
 struct ProcessSurvey {
     QString cpuName, memoryName, ioName, displayName, ownName;
     // cpu includes short-lived children; own is the process alone (a pegged thread).
-    double cpu = -1, memory = -1, io = -1, display = -1, cpuChildren = 0, self = -1, own = -1;
+    double cpu = -1, memory = -1, io = -1, display = -1, cpuChildren = 0, own = -1;
     QStringList blocked;
     explicit ProcessSurvey(const QJsonObject &snapshot) {
         for (const auto *key : {"processes", "systemProcesses"}) {
@@ -62,7 +62,7 @@ struct ProcessSurvey {
                 const auto p = value.toObject();
                 // DevStats never names itself: opening its window or running a diagnosis
                 // briefly costs CPU, and that is not why the computer was slow.
-                if (p[QLatin1String("self")].toBool()) { self = p[QLatin1String("cpuPercent")].toDouble(-1); continue; }
+                if (p[QLatin1String("self")].toBool()) continue;
                 const QString name = p[QLatin1String("name")].toString();
                 const double usage = cpuWithChildren(p), rss = p[QLatin1String("memoryBytes")].toDouble(-1);
                 const double disk = p[QLatin1String("ioReadBytesPerSecond")].toDouble(0) + p[QLatin1String("ioWriteBytesPerSecond")].toDouble(0);
@@ -304,10 +304,9 @@ QJsonObject diagnoseSystem(const QJsonObject &snapshot) {
     if (!diskBusy) coverage.append(QStringLiteral("磁盘繁忙度和等待时间尚无数据。"));
     if (!diskKnown) coverage.append(QStringLiteral("未读取到文件系统容量。"));
     coverage.append(QStringLiteral("其他用户和系统进程只能看到 CPU 与内存，不能结束；当前用户的进程才能操作。"));
-    if (snapshot["processesFresh"].toBool()) {
-        const auto &top = survey();
-        if (top.self >= 30) coverage.append(QStringLiteral("DevStats 自身此刻占用 %1（打开窗口或一键诊断时会短暂升高），已排除在可疑程序之外。").arg(cores(top.self)));
-    }
+    // Read from the sampler's own figure: healthy snapshots must not walk the process list.
+    const Number selfCpu = metric(snapshot["selfCpuPercent"]);
+    if (atLeast(selfCpu, 30)) coverage.append(QStringLiteral("DevStats 自身此刻占用 %1（打开窗口或一键诊断时会短暂升高），已排除在可疑程序之外。").arg(cores(*selfCpu)));
     coverage.append(QStringLiteral("GPU 负载、应用内部的锁等待和网络延迟无法直接测量。"));
 
     const bool known = usage && availableFraction;

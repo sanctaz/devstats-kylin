@@ -10,6 +10,7 @@
 #include <QThread>
 #include <QVector>
 #include <QtTest/QTest>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -33,9 +34,35 @@ int main(int argc, char **argv) {
     MonitorWorker worker(root.path() + "/data", {}, false);
     QJsonObject latest;
     QObject::connect(&worker, &MonitorWorker::snapshotReady, [&](const QJsonObject &snapshot) { latest = snapshot; });
+    // The history as the window receives it: a complete range, then single points.
+    HistoryFeed history;
+    QJsonObject completeRange;
+    int completeRanges = 0, additions = 0;
+    bool additionsAreSinglePoints = true;
+    QObject::connect(&worker, &MonitorWorker::historyReady, [&](const QJsonObject &range, qint64 start, qint64 end) {
+        ++completeRanges; completeRange = range; history.reset(range, start, end);
+    });
+    QObject::connect(&worker, &MonitorWorker::historyAppended, [&](const QJsonObject &points, qint64 start, qint64 end) {
+        ++additions; history.append(points, start, end);
+        const double newest = std::floor(latest.value("timestamp").toDouble());
+        additionsAreSinglePoints &= double(end) == newest && points.value("cpu").toObject().value("timestamp").toDouble() == newest
+            && points.value("memory").toObject().value("value").isDouble();
+    });
     worker.setPresentationVisible(true);
     worker.start();
     QTest::qWait(4500);
+
+    // Opening the window sends the whole range once. After that each sample sends
+    // only its own points, and together they are what a complete range would hold.
+    check(completeRanges == 1 && additions >= 1 && additionsAreSinglePoints, "after the first complete range each sample adds one point per metric");
+    {
+        const auto cpu = history.series("cpu"), memory = history.series("memory"), latency = history.series("schedulerLatency");
+        const qint64 start = history.start(), end = history.end();
+        worker.setHistoryDuration(120);
+        check(completeRanges == 2 && history.start() == start && history.end() == end, "changing the range sends a complete range at once");
+        check(cpu.size() >= 2 && completeRange.value("cpu").toArray() == cpu && completeRange.value("memory").toArray() == memory
+              && completeRange.value("schedulerLatency").toArray() == latency, "the points added one by one equal a freshly built complete range");
+    }
 
     // What a sample now contains, measured on a real kernel.
     check(latest.value("responsiveness").toObject().value("schedulerMaxMs").isDouble(), "scheduler latency is measured");
@@ -49,7 +76,13 @@ int main(int argc, char **argv) {
     for (const auto &value : latest.value("systemProcesses").toArray())
         check(!value.toObject().contains("owner") || value.toObject().value("executablePath").toString().isEmpty(), "other users' paths are never read");
     check(latest.value("diagnostics").toObject().value("meters").toArray().size() == 6, "diagnosis has its meters");
-    check(!latest.value("suspects").toArray().isEmpty(), "a visible page gets ranked suspects");
+    check(latest.value("suspects").toArray().isEmpty(), "pages that do not show suspects do not pay for ranking them");
+    worker.setSuspectRanking(true);
+    check(!latest.value("suspects").toArray().isEmpty(), "opening the diagnosis page ranks the scan already in hand");
+    QTest::qWait(2500);
+    check(!latest.value("suspects").toArray().isEmpty(), "the diagnosis page keeps getting ranked suspects");
+    check(latest.value("selfCpuPercent").isDouble() && latest.value("selfPid").toDouble() == double(QCoreApplication::applicationPid()),
+          "DevStats' own CPU is reported at the top level");
 
     // Oversubscribe every core at the lowest priority, so nothing else on the machine suffers.
     QVector<std::shared_ptr<QProcess>> burners;

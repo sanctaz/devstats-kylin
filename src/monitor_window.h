@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <memory>
 
+class HistoryFeed;
 class ProcessRulesPanel;
 
 class MonitorWindow final : public QMainWindow {
@@ -15,7 +16,7 @@ public:
     explicit MonitorWindow(int appearance = 1, QWidget *parent = nullptr);
     ~MonitorWindow() override;
     void setSnapshot(const QJsonObject &snapshot);
-    void setHistories(const QJsonObject &histories, qint64 start, qint64 end);
+    void setHistories(const HistoryFeed &feed);
     void setSelectedModule(const QString &module);
     QString selectedModule() const;
     qint64 historyDuration() const;
@@ -34,6 +35,7 @@ signals:
     void durationChanged(qint64 seconds);
     void visibilityChanged(bool visible);
     void networkObservationRequested(bool enabled);
+    void suspectRankingRequested(bool enabled);
     void addProjectRequested();
     void removeProjectRequested(QString path);
     void autoStartRequested(bool enabled);

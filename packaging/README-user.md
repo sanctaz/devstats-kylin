@@ -8,8 +8,8 @@
 ## 解压即用
 
 ```sh
-tar -xzf devstats-0.8.5-linux-arm64-user.tar.gz
-cd devstats-0.8.5-linux-arm64-user
+tar -xzf devstats-0.8.6-linux-arm64-user.tar.gz
+cd devstats-0.8.6-linux-arm64-user
 ./devstats --show
 ```
 
@@ -23,7 +23,7 @@ cd devstats-0.8.5-linux-arm64-user
 ./install-user.sh
 ```
 
-默认安装目录为 `~/.local/opt/devstats-0.8.5`；命令入口为
+默认安装目录为 `~/.local/opt/devstats-0.8.6`；命令入口为
 `~/.local/bin/devstats`；菜单入口和图标位于
 `${XDG_DATA_HOME:-~/.local/share}/applications` 和 `icons/hicolor/scalable/apps`。
 安装器拒绝 root，也不会替你开启登录启动。默认数据位于当前用户的 XDG 数据目录，
@@ -36,7 +36,7 @@ cd devstats-0.8.5-linux-arm64-user
 同版本内容不同或已修改时，使用新的空目录，不覆盖原文件。自定义位置示例：
 
 ```sh
-DEVSTATS_USER_INSTALL_DIR="$HOME/应用/DevStats 0.8.5" \
+DEVSTATS_USER_INSTALL_DIR="$HOME/应用/DevStats 0.8.6" \
 DEVSTATS_USER_BIN_DIR="$HOME/.local/bin" ./install-user.sh
 ```
 
@@ -141,7 +141,7 @@ https://doc.qt.io/qt-6/deployment-plugins.html 。
 
 ## 显式安装范围
 
-需要把程序和入口都放入一个指定目录时，可执行 `./install-user.sh --prefix /绝对路径/DevStats`；版本目录为 `opt/devstats-0.8.5`，入口为 `bin/devstats`。卸载用 `./uninstall-user.sh --prefix /绝对路径/DevStats`，只检查这个前缀下的已验证安装，不扫描默认 HOME 目录；设置、历史、任务和缓存仍保留。前缀必须是无符号链接的规范绝对路径，不能为空或根目录。
+需要把程序和入口都放入一个指定目录时，可执行 `./install-user.sh --prefix /绝对路径/DevStats`；版本目录为 `opt/devstats-0.8.6`，入口为 `bin/devstats`。卸载用 `./uninstall-user.sh --prefix /绝对路径/DevStats`，只检查这个前缀下的已验证安装，不扫描默认 HOME 目录；设置、历史、任务和缓存仍保留。前缀必须是无符号链接的规范绝对路径，不能为空或根目录。
 
 ## 卡顿诊断
 

@@ -4,13 +4,15 @@
 #include <QJsonArray>
 #include <memory>
 
+class HistoryFeed;
+
 class DiagnosticsPanel final : public QWidget {
     Q_OBJECT
 public:
     explicit DiagnosticsPanel(QWidget *parent = nullptr);
     ~DiagnosticsPanel() override;
     void setSnapshot(const QJsonObject &snapshot);
-    void setHistories(const QJsonObject &history, qint64 start, qint64 end);
+    void setHistories(const HistoryFeed &feed);
     void setFeedback(const QString &message);
     void setIncidents(const QJsonArray &incidents);
     void setIncidentDetail(const QJsonObject &incident);

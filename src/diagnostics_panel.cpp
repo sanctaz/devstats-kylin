@@ -1,5 +1,6 @@
 #include "diagnostics_panel.h"
 #include "charts.h"
+#include "history_feed.h"
 #include "process_actions.h"
 #include "ui_components.h"
 #include "ui_theme.h"
@@ -154,7 +155,8 @@ void setRowAlignment(QTreeWidgetItem *item, int columns) {
 
 struct DiagnosticsPanel::Impl {
     DiagnosticsPanel *q;
-    QJsonObject snapshot, histories, incident;
+    QJsonObject snapshot, incident;
+    HistoryFeed histories;
     QJsonArray incidents, renderedFindings;
     QFrame *banner = nullptr;
     QLabel *bannerPill = nullptr, *headline = nullptr, *summary = nullptr, *feedback = nullptr;
@@ -188,7 +190,6 @@ struct DiagnosticsPanel::Impl {
     QString selectedIncidentId;
     bool incidentsReceived = false, incidentsDirty = true, detailDirty = false, detailReceived = false;
     QHash<QString, HistoryChart *> charts;
-    qint64 historyStart = 0, historyEnd = 0;
     bool dirty = true, runDismissed = false, findingsShown = false;
     QJsonObject renderedRun;
     QString lastRunState = QStringLiteral("idle");
@@ -525,7 +526,7 @@ struct DiagnosticsPanel::Impl {
         if (sections->currentIndex() == 2) renderHistory();
     }
     void renderHistory() {
-        for (auto it = charts.cbegin(); it != charts.cend(); ++it) it.value()->setPoints(histories.value(it.key()).toArray(), historyStart, historyEnd);
+        for (auto it = charts.cbegin(); it != charts.cend(); ++it) it.value()->setHistory(histories, it.key());
     }
     static constexpr int MetricItemToneRole = Qt::UserRole + 40;
 };
@@ -780,8 +781,8 @@ DiagnosticsPanel::DiagnosticsPanel(QWidget *parent) : QWidget(parent), d(new Imp
 
 DiagnosticsPanel::~DiagnosticsPanel() = default;
 void DiagnosticsPanel::setSnapshot(const QJsonObject &snapshot) { d->snapshot = snapshot; d->dirty = true; if (isVisible()) d->render(); }
-void DiagnosticsPanel::setHistories(const QJsonObject &h, qint64 start, qint64 end) {
-    d->histories = h; d->historyStart = start; d->historyEnd = end; d->dirty = true;
+void DiagnosticsPanel::setHistories(const HistoryFeed &feed) {
+    d->histories = feed; d->dirty = true;
     if (isVisible() && d->sections->currentIndex() == 2) d->renderHistory();
 }
 void DiagnosticsPanel::setFeedback(const QString &message) {
@@ -872,7 +873,7 @@ QJsonObject DiagnosticsPanel::report() const {
     auto disk = d->snapshot.value("diskIO").toObject();
     out["diskIO"] = disk;
     QJsonObject history;
-    for (const auto &key : {"cpu", "memory", "memoryPressure", "ioPressure", "cpuIowait", "swapIn", "swapOut", "schedulerLatency", "diskBusy"}) history[key] = d->histories.value(key);
-    out["history"] = history; out["historyStart"] = double(d->historyStart); out["historyEnd"] = double(d->historyEnd);
+    for (const auto &key : {"cpu", "memory", "memoryPressure", "ioPressure", "cpuIowait", "swapIn", "swapOut", "schedulerLatency", "diskBusy"}) history[key] = d->histories.series(QString::fromLatin1(key));
+    out["history"] = history; out["historyStart"] = double(d->histories.start()); out["historyEnd"] = double(d->histories.end());
     return out;
 }

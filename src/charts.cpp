@@ -1,9 +1,10 @@
 #include "charts.h"
+#include "history_feed.h"
 #include "ui_theme.h"
 #include <QPainter>
-#include <QPainterPath>
 #include <QDateTime>
 #include <QMouseEvent>
+#include <QResizeEvent>
 #include <QToolTip>
 #include <QJsonObject>
 #include <QLinearGradient>
@@ -15,6 +16,53 @@ namespace {
 constexpr int MaxChartPoints = 600;
 QColor opacity(QColor color, double alpha) { color.setAlphaF(alpha); return color; }
 QFont annotationFont(const QFont &base) { QFont f(base); f.setPointSizeF(9); return f; }
+}
+
+// Qt's antialiasing rasterizer keeps the cells a shape covers in a small pool. When
+// the pool overflows it halves the band of scan lines it works on and walks the whole
+// outline again. A long jagged line overflows again and again, so one path for a whole
+// chart was measured at two and a half to five times the cost of the same pixels drawn
+// in pieces. Each strip is clipped at whole pixels and drawn from only the points that
+// can reach into it, which keeps every outline small and leaves every pixel as it was.
+void drawChartRun(QPainter &painter, const ChartRun &run, const QRectF &clip, qreal baseline,
+                  const QBrush &area, const QColor &band, const QPen &line, int stripWidth) {
+    const int count = run.mean.size();
+    if (count < 2 || stripWidth < 1) return;
+    bool spread = false;
+    for (int i = 0; i < count && !spread; ++i) spread = run.low[i].y() != run.high[i].y();
+    // How far outside a strip a point can still paint into it: half the pen, plus the
+    // rounding of the strip's edges to whole pixels.
+    const qreal reach = line.widthF() / 2 + 1.5;
+    const auto leftOf = [](const QPointF &point, qreal x) { return point.x() < x; };
+    const auto rightOf = [](qreal x, const QPointF &point) { return x < point.x(); };
+    QVector<QPointF> polygon;
+    for (qreal left = clip.left(); left < clip.right(); left += stripWidth) {
+        const qreal right = std::min(left + stripWidth, clip.right());
+        if (run.mean.last().x() < left - reach || run.mean.first().x() > right + reach) continue;
+        // One point beyond the strip on each side, so the joins nearest its edges are
+        // made with the same neighbours as in the whole line.
+        const int lo = std::max(0, int(std::lower_bound(run.mean.cbegin(), run.mean.cend(), left - reach, leftOf) - run.mean.cbegin()) - 1);
+        const int hi = std::min(count - 1, int(std::upper_bound(run.mean.cbegin(), run.mean.cend(), right + reach, rightOf) - run.mean.cbegin()));
+        painter.setClipRect(QRectF(left, clip.top(), right - left, clip.height()));
+        painter.setPen(Qt::NoPen);
+        polygon.resize(0);
+        for (int i = lo; i <= hi; ++i) polygon.append(run.mean[i]);
+        polygon.append(QPointF(run.mean[hi].x(), baseline));
+        polygon.append(QPointF(run.mean[lo].x(), baseline));
+        painter.setBrush(area);
+        painter.drawPolygon(polygon.constData(), polygon.size());
+        if (spread) {
+            polygon.resize(0);
+            for (int i = lo; i <= hi; ++i) polygon.append(run.low[i]);
+            for (int i = hi; i >= lo; --i) polygon.append(run.high[i]);
+            painter.setBrush(band);
+            painter.drawPolygon(polygon.constData(), polygon.size());
+        }
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(line);
+        painter.drawPolyline(run.mean.constData() + lo, hi - lo + 1);
+    }
+    painter.setClipRect(clip);
 }
 
 QString formatBytes(double value, bool rate) {
@@ -46,7 +94,13 @@ void HistoryChart::setCompact(bool compact) {
     compact_ = compact;
     setMinimumHeight(compact ? 40 : 132);
     if (compact) setMaximumHeight(56);
-    update();
+    rebuild();
+}
+
+// The number of points drawn follows the width.
+void HistoryChart::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    if (event->size().width() != event->oldSize().width()) rebuild();
 }
 
 QString HistoryChart::format(double value) const {
@@ -56,58 +110,82 @@ QString HistoryChart::format(double value) const {
                          : QString::number(value, 'f', 0) + QStringLiteral(" 毫秒");
 }
 
-void HistoryChart::setPoints(const QJsonArray &points, qint64 start, qint64 end) {
-    end = std::max(start + 1, end);
-    if (hasSource_ && source_ == points && start_ == start && end_ == end) return;
-    source_ = points;
-    hasSource_ = true;
-    start_ = start;
-    end_ = end;
-    if (hovered_ >= 0) QToolTip::hideText();
-    hovered_ = -1;
-    hasLatest_ = false;
-    QVector<Point> samples;
-    samples.reserve(points.size());
-    auto timestamp = [](const QJsonValue &value, qint64 fallback) {
+HistoryChart::Point HistoryChart::parse(const QJsonValue &entry) {
+    const auto timestamp = [](const QJsonValue &value, qint64 fallback) {
         const double number = value.toDouble(-1);
         return value.isDouble() && std::isfinite(number) && number >= 0 && number <= 1.0e12
             ? qint64(number) : fallback;
     };
-    for (const auto &entry : points) {
-        const auto p = entry.toObject();
-        const qint64 at = timestamp(p.value("timestamp"), -1);
-        if (at < start || at > end) continue;
-        const auto value = p.value("value");
-        const double mean = value.isDouble() && std::isfinite(value.toDouble()) && value.toDouble() >= 0
-            ? value.toDouble() : std::numeric_limits<double>::quiet_NaN();
-        auto bound = [&](const char *name) {
-            const auto v = p.value(QLatin1String(name));
-            return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble() >= 0 ? v.toDouble() : mean;
-        };
-        const qint64 first = std::min(at, timestamp(p.value("firstSample"), at));
-        const qint64 last = std::max(at, timestamp(p.value("lastSample"), at));
-        const double count = p.value("count").toDouble(1);
-        samples.append({at, std::max(start, first), std::min(end, last), mean,
-            std::min(mean, bound("minimum")), std::max(mean, bound("maximum")),
-            std::isfinite(count) && count > 0 ? std::min(count, 1.0e12) : 1,
-            !p.value("raw").toBool() && p.value("resolutionSeconds").toDouble(60) > 2 && p.value("count").isDouble(), false});
+    const auto p = entry.toObject();
+    const qint64 at = timestamp(p.value(QLatin1String("timestamp")), -1);
+    const auto value = p.value(QLatin1String("value"));
+    const double mean = value.isDouble() && std::isfinite(value.toDouble()) && value.toDouble() >= 0
+        ? value.toDouble() : std::numeric_limits<double>::quiet_NaN();
+    const auto bound = [&](QLatin1String name) {
+        const auto v = p.value(name);
+        return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble() >= 0 ? v.toDouble() : mean;
+    };
+    const auto countValue = p.value(QLatin1String("count"));
+    const double count = countValue.toDouble(1);
+    return {at, std::min(at, timestamp(p.value(QLatin1String("firstSample")), at)),
+        std::max(at, timestamp(p.value(QLatin1String("lastSample")), at)), mean,
+        std::min(mean, bound(QLatin1String("minimum"))), std::max(mean, bound(QLatin1String("maximum"))),
+        std::isfinite(count) && count > 0 ? std::min(count, 1.0e12) : 1,
+        !p.value(QLatin1String("raw")).toBool() && p.value(QLatin1String("resolutionSeconds")).toDouble(60) > 2 && countValue.isDouble(), false};
+}
+
+void HistoryChart::setHistory(const HistoryFeed &feed, const QString &metric) {
+    const qint64 start = feed.start(), end = std::max(start + 1, feed.end());
+    const auto recent = feed.recent(metric);
+    const auto earlier = [](const Point &a, const Point &b) { return a.at < b.at; };
+    if (feed.generation() && feed.generation() == generation_ && applied_ <= recent.size()) {
+        if (applied_ == recent.size() && start_ == start && end_ == end) return;
+        // New points nearly always belong at the end. Placing each after the points
+        // of the same second gives the order a complete sort would.
+        for (int i = applied_; i < recent.size(); ++i) {
+            const Point sample = parse(recent.at(i));
+            samples_.insert(std::upper_bound(samples_.begin(), samples_.end(), sample, earlier), sample);
+        }
+    } else {
+        const auto complete = feed.complete(metric);
+        samples_.clear();
+        samples_.reserve(complete.size() + recent.size());
+        for (const auto &entry : complete) samples_.append(parse(entry));
+        for (const auto &entry : recent) samples_.append(parse(entry));
+        std::stable_sort(samples_.begin(), samples_.end(), earlier);
     }
-    std::stable_sort(samples.begin(), samples.end(), [](const Point &a, const Point &b) { return a.at < b.at; });
+    generation_ = feed.generation();
+    applied_ = recent.size();
+    start_ = start;
+    end_ = end;
+    rebuild();
+}
+
+void HistoryChart::rebuild() {
+    if (hovered_ >= 0) QToolTip::hideText();
+    hovered_ = -1;
+    hasLatest_ = false;
     points_.clear();
-    points_.reserve(std::min(MaxChartPoints, samples.size()));
+    // At most two points per pixel column. Two neighbours still show as the line going
+    // up and down; more than that cannot be told apart, and every point costs time to
+    // draw. Samples that share a slot become one point with their mean and full range.
+    const int columns = std::clamp(2 * int(plotRect().width()), 1, MaxChartPoints);
+    points_.reserve(std::min(columns, samples_.size()));
     const qint64 bucketSeconds = std::max<qint64>(60, (end_ - start_ + MaxChartPoints - 1) / MaxChartPoints);
     int currentBin = -1;
-    const Point *previous = nullptr;
-    bool missing = true;
-    for (const auto &sample : samples) {
+    Point previous{};
+    bool hasPrevious = false, missing = true;
+    for (Point sample : samples_) {
+        if (sample.at < start_ || sample.at > end_) continue;
+        sample.first = std::max(start_, sample.first);
+        sample.last = std::min(end_, sample.last);
         // Missing readings break the line even when valid samples are close together.
         if (!std::isfinite(sample.value)) { missing = true; continue; }
         latest_ = sample;
         hasLatest_ = true;
-        const qint64 allowedGap = previous && previous->aggregate && sample.aggregate ? bucketSeconds * 2 : 4;
-        const bool gap = missing || !previous || sample.first - previous->last > allowedGap;
-        const int bin = int(std::min<qint64>(MaxChartPoints - 1,
-            (sample.at - start_) * MaxChartPoints / (end_ - start_)));
+        const qint64 allowedGap = hasPrevious && previous.aggregate && sample.aggregate ? bucketSeconds * 2 : 4;
+        const bool gap = missing || !hasPrevious || sample.first - previous.last > allowedGap;
+        const int bin = int(std::min<qint64>(columns - 1, (sample.at - start_) * columns / (end_ - start_)));
         if (bin != currentBin) {
             Point point = sample;
             point.gapBefore = gap;
@@ -129,7 +207,8 @@ void HistoryChart::setPoints(const QJsonArray &points, qint64 start, qint64 end)
             point.maximum = std::max(point.maximum, sample.maximum);
             point.aggregate = true;
         }
-        previous = &sample;
+        previous = sample;
+        hasPrevious = true;
         missing = false;
     }
     setAccessibleDescription(hasLatest_ ? QString::fromUtf8("末次采样 ") + format(latest_.value)
@@ -169,38 +248,38 @@ void HistoryChart::paintEvent(QPaintEvent *) {
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
     }
     painter.save();
-    painter.setClipRect(plot.adjusted(-3, -3, 3, 3));
+    const QRectF clip = plot.adjusted(-3, -3, 3, 3);
+    painter.setClipRect(clip);
     QLinearGradient gradient(plot.topLeft(), plot.bottomLeft());
     gradient.setColorAt(0, opacity(colors.accent, .22));
     gradient.setColorAt(1, opacity(colors.accent, .025));
+    const qreal lineWidth = 1.7;
+    ChartRun run;
     int begin = 0;
     while (begin < points_.size()) {
         int finish = begin + 1;
         while (finish < points_.size() && !points_[finish].gapBefore) ++finish;
         const auto &first = points_[begin];
         const auto &last = points_[finish - 1];
-        QPainterPath line;
-        line.moveTo(position(first.first, first.value));
-        for (int i = begin; i < finish; ++i) line.lineTo(position(points_[i].at, points_[i].value));
-        line.lineTo(position(last.last, last.value));
-        QPainterPath area = line;
-        area.lineTo(position(last.last, 0));
-        area.lineTo(position(first.first, 0));
-        area.closeSubpath();
-        painter.fillPath(area, gradient);
-        // Minute summaries retain their full observed range above the mean area.
-        QPainterPath band;
-        band.moveTo(position(first.first, first.minimum));
-        for (int i = begin; i < finish; ++i) band.lineTo(position(points_[i].at, points_[i].minimum));
-        band.lineTo(position(last.last, last.minimum));
-        band.lineTo(position(last.last, last.maximum));
-        for (int i = finish - 1; i >= begin; --i) band.lineTo(position(points_[i].at, points_[i].maximum));
-        band.lineTo(position(first.first, first.maximum));
-        band.closeSubpath();
-        painter.fillPath(band, opacity(colors.accent, .13));
-        painter.setPen(QPen(colors.accent, 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter.drawPath(line);
+        // The stretch starts where its first point's samples began and ends where its
+        // last point's samples ended. Minute summaries keep their full observed range
+        // as a band around the mean.
+        run.mean.resize(0); run.low.resize(0); run.high.resize(0);
+        const auto add = [&](qint64 at, const Point &point) {
+            run.mean.append(position(at, point.value));
+            run.low.append(position(at, point.minimum));
+            run.high.append(position(at, point.maximum));
+        };
+        add(first.first, first);
+        for (int i = begin; i < finish; ++i) add(points_[i].at, points_[i]);
+        add(last.last, last);
+        // Rounding every corner is the costliest part of a dense line, and where the
+        // points lie closer together than the line is wide the rounding cannot be seen.
+        const bool dense = run.mean.last().x() - run.mean.first().x() < lineWidth * (finish - begin);
+        const QPen linePen(colors.accent, lineWidth, Qt::SolidLine, Qt::RoundCap, dense ? Qt::BevelJoin : Qt::RoundJoin);
+        drawChartRun(painter, run, clip, plot.bottom(), gradient, opacity(colors.accent, .13), linePen);
         if (finish == begin + 1 && first.first == first.last) {
+            painter.setPen(linePen);
             if (first.minimum != first.maximum)
                 painter.drawLine(position(first.at, first.minimum), position(first.at, first.maximum));
             painter.setBrush(colors.accent);

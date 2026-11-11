@@ -1,6 +1,7 @@
 #include "monitor_window.h"
 #include "charts.h"
 #include "diagnostics_panel.h"
+#include "history_feed.h"
 #include "network_activity_panel.h"
 #include "process_rules_panel.h"
 #include "resource_breakdown.h"
@@ -244,14 +245,15 @@ struct MonitorWindow::Impl {
     QPointer<QComboBox> themeCombo, appearanceCombo;
     QPointer<QListWidget> appsList;
     QHBoxLayout *customLaunches = nullptr;
-    QJsonObject snapshot, histories;
+    QJsonObject snapshot;
+    HistoryFeed histories;
     QJsonArray incidents;
     QHash<QString, QJsonObject> pageInputs;
-    qint64 historyStart = 0, historyEnd = 0;
     DiagnosticsPanel *diagnostics = nullptr;
     ProcessRulesPanel *rules = nullptr;
     NetworkActivityPanel *networkActivity = nullptr;
     bool networkObserving = false;
+    bool suspectRanking = false;
     bool autoStart = false, visible = false;
     int trayTheme = 0, appearance = 1;
     bool largeTrayText = true, automationNotifications = true;
@@ -1150,16 +1152,16 @@ void MonitorWindow::renderCurrentSnapshot() {
     if (module == "automation") d->rules->setSnapshot(snapshot);
 }
 
-void MonitorWindow::setHistories(const QJsonObject &histories, qint64 start, qint64 end) {
-    d->histories = histories; d->historyStart = start; d->historyEnd = end;
+void MonitorWindow::setHistories(const HistoryFeed &feed) {
+    d->histories = feed;
     renderCurrentHistories();
 }
 
 void MonitorWindow::renderCurrentHistories() {
-    if (selectedModule() == "diagnostics") d->diagnostics->setHistories(d->histories, d->historyStart, d->historyEnd);
+    if (selectedModule() == "diagnostics") d->diagnostics->setHistories(d->histories);
     auto *page = d->pages->currentWidget();
     for (auto it = d->charts.cbegin(); it != d->charts.cend(); ++it)
-        if (page->isAncestorOf(it.value())) it.value()->setPoints(d->histories.value(it.key()).toArray(), d->historyStart, d->historyEnd);
+        if (page->isAncestorOf(it.value())) it.value()->setHistory(d->histories, it.key());
 }
 
 QJsonObject MonitorWindow::diagnosticReport() const { return d->diagnostics->report(); }
@@ -1324,6 +1326,9 @@ void MonitorWindow::showSettings() {
 void MonitorWindow::publishNetworkObservation() {
     const bool active = d->visible && selectedModule() == "network";
     if (d->networkObserving != active) { d->networkObserving = active; emit networkObservationRequested(active); }
+    // Suspects are shown on the diagnosis page only; other pages do not pay for the ranking.
+    const bool ranking = d->visible && selectedModule() == "diagnostics";
+    if (d->suspectRanking != ranking) { d->suspectRanking = ranking; emit suspectRankingRequested(ranking); }
 }
 void MonitorWindow::publishVisibility(bool visible) { if (d->visible != visible) { d->visible = visible; emit visibilityChanged(visible); } publishNetworkObservation(); }
 void MonitorWindow::closeEvent(QCloseEvent *event) { publishVisibility(false); QMainWindow::closeEvent(event); }
